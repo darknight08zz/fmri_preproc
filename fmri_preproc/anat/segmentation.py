@@ -13,116 +13,145 @@ class Segmentation:
     """
     def run(self, input_path: str, output_base: str) -> Tuple[bool, str]:
         """
-        Runs K-Means Segmentation (3 classes).
+        Runs K-Means Segmentation (5 classes for robustness).
+        Classes: 0=Background, 1=CSF, 2=GM, 3=WM, 4=Skull/Scalp.
         Produces:
             - output_base_pve_0.nii.gz (CSF)
             - output_base_pve_1.nii.gz (GM)
             - output_base_pve_2.nii.gz (WM)
-            - output_base_restore.nii.gz (Bias Corrected - Mocked as original)
-        
-        Returns:
-            Tuple[bool, str]: (success, qc_plot_path)
+            - output_base_restore.nii.gz (Bias Corrected - Mocked)
         """
-        print(f"Running Native Segmentation (K-Means) on {input_path}")
+        print(f"Running Native Segmentation (5-Class K-Means) on {input_path}")
         
         try:
             img = nib.load(input_path)
             data = img.get_fdata()
             affine = img.affine
             
-            # Mask background (0s from skull stripping? Or robust range)
-            mask = data > (np.mean(data) * 0.1) # Simple threshold
-            masked_data = data[mask].reshape(-1, 1)
+            # 1. Robust Pre-masking (Otsu-like or simple)
+            # Remove absolute zero background
+            # Hist-based threshold to remove air
+            hist, bins = np.histogram(data[data > 0], bins=100)
+            # Otsu approx: data > mean? Or simple percentile?
+            # Skull stripping is hard without bet.
+            # Let's rely on clustering to separate "Dark Background" from tissues.
             
-            if len(masked_data) == 0:
-                print("Error: No data in mask.")
-                return False
+            # Flatten
+            flat_data = data.reshape(-1, 1)
+            
+            # 2. K-Means with 5 classes
+            # We expect: 
+            # C0 (Darkest) = Background (Air)
+            # C1 = CSF
+            # C2 = GM
+            # C3 = WM
+            # C4 (Brightest) = Skull/Fat/Scalp
+            
+            print("  Clustering voxels (k=5)...")
+            kmeans = KMeans(n_clusters=5, random_state=42, n_init=5)
+            # Subsample for speed if needed, but 5 classes 1mm^3 is fast enough usually
+            # Or fit on non-zero?
+            mask_nz = data > 0
+            data_nz = data[mask_nz].reshape(-1, 1)
+            
+            if len(data_nz) < 1000:
+                print("Error: Image seems empty.")
+                return False, None
                 
-            # K-Means with 3 clusters (+ Background is 0)
-            print("  Clustering voxels...")
-            kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
-            # fit_predict on masked data
-            labels_flat = kmeans.fit_predict(masked_data)
+            kmeans.fit(data_nz)
             centers = kmeans.cluster_centers_.flatten()
-            
-            # Sort centers by intensity: Darkest=CSF, Medium=GM, Brightest=WM
             sorted_indices = np.argsort(centers)
-            # mapping: cluster_idx -> tissue_type (0=CSF, 1=GM, 2=WM)
             
-            # --- MRF-like Regularization ---
-            # Instead of just taking the raw labels (speckled), we calculate probabilities
-            # and smooth them (simulating spatial prior).
+            # Map Cluster Index -> Sorted Rank (0..4)
+            # rank_map[original_cluster_id] = rank
+            rank_map = np.zeros(5, dtype=int)
+            rank_map[sorted_indices] = np.arange(5)
             
-            print("  Applying MRF-like Spatial Regularization...")
+            # Get labels for full image (predict 0s as well? no, 0s are 0)
+            # Predict full image to get spatial map
+            # This is heavy. Alternatively predict only nz and fill.
+            labels_nz = kmeans.predict(data_nz)
             
-            # 1. Calculate squared distance to each center for all masked voxels
-            # dist shape: (N_voxels, 3)
-            # We can use transform() or manual
-            dists = kmeans.transform(masked_data)
+            # Map labels to Rank (0=BG... 4=Skull)
+            ranked_labels_nz = rank_map[labels_nz]
             
-            # 2. Convert to probability-like weights: P ~ exp(-dist^2)
-            # Normalize to avoid underflow? 
-            # We care about relative values.
-            # sigma estimated from variance? Let's fix a heuristic.
-            sigma = np.std(masked_data) * 0.5
-            probs_flat = np.exp(- (dists ** 2) / (2 * sigma**2))
+            # Create Volume of Ranks
+            rank_vol = np.zeros_like(data, dtype=int)
+            rank_vol[mask_nz] = ranked_labels_nz
             
-            # Normalize rows to sum to 1
-            row_sums = probs_flat.sum(axis=1, keepdims=True)
-            probs_flat = probs_flat / (row_sums + 1e-9)
+            # 3. Probability Maps via Softmax/Distance (MRF-like)
+            # We only want CSF (Rank 1), GM (Rank 2), WM (Rank 3).
+            # We discard Rank 0 (BG) and Rank 4 (Skull).
             
-            # 3. Map back to volume for smoothing
-            probs_vol = np.zeros(data.shape + (3,)) # (X,Y,Z,3)
+            print("  Recovering tissue probabilities...")
+            # Distance to centers
+            sorted_centers = centers[sorted_indices]
+            # dist shape: (N_voxels, 5)
+            dists = kmeans.transform(data_nz)
             
-            # We need full indices of masked data
-            # mask is boolean volume
-            mask_indices = np.where(mask)
+            # Reorder dists columns to match Ranks 0..4
+            # dists[:, i] is dist to center i. 
+            # We want dists_ranked[:, 0] to be dist to center with Rank 0.
+            # Center with Rank 0 is center[sorted_indices[0]]
+            # So dists_ranked[:, k] = dists[:, sorted_indices[k]]
+            dists_ranked = dists[:, sorted_indices]
             
-            # Fill 3D volumes
-            # We need to map sorted_indices to 0,1,2 standard order
-            # dists[:, 0] corresponds to center[0], which might be WM.
-            # We want probs_vol[..., 0] to be CSF (sorted_indices[0]).
+            # Convert to Probabilities: Softmax(-dist^2 / T)
+            # Temperature T controls sharpness.
+            sigma = np.std(data_nz) * 0.5
+            logits = - (dists_ranked ** 2) / (2 * sigma**2)
             
-            # Invert sorting: if sorted_indices is [2, 0, 1] (meaning center 2 is CSF...)
-            # Then we want probs_vol[..., 0] = probs_flat[:, 2]
+            # Softmax per voxel
+            # exp_logits = np.exp(logits - np.max(logits, axis=1, keepdims=True))
+            # probs_nz = exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
+            # shape (N_nz, 5)
             
-            for tissue_idx in range(3):
-                # Which center corresponds to this tissue type?
-                center_idx = sorted_indices[tissue_idx]
-                probs_vol[mask_indices[0], mask_indices[1], mask_indices[2], tissue_idx] = probs_flat[:, center_idx]
-
-            # 4. Spatial Smoothing (Regularization)
-            # Smooth each probability map
-            smoothed_probs = np.zeros_like(probs_vol)
-            for i in range(3):
-                # Sigma=1.0mm roughly (voxel size dependent usually, assume 1-2 voxels)
-                smoothed_probs[..., i] = scipy.ndimage.gaussian_filter(probs_vol[..., i], sigma=1.0)
+            # We can just output these probabilities? 
+            # But let's apply Spatial Smoothing (MRF approximation).
+            
+            # Create 4D prob volume (X,Y,Z, 5)
+            probs_vol = np.zeros(data.shape + (5,))
+            
+            # Optimize: do calculation on masked? Yes.
+            exp_logits = np.exp(logits - np.max(logits, axis=1, keepdims=True))
+            probs_nz = exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
+            
+            # Fill volume
+            nz_indices = np.where(mask_nz)
+            # This assignment is slow in Python loop. Advanced indexing?
+            # probs_vol[mask_nz] = probs_nz # Works if broadcasting handles last dim?
+            # mask_nz is (X,Y,Z). probs_vol is (X,Y,Z,5).
+            # probs_vol[mask_nz, :] should work.
+            probs_vol[mask_nz, :] = probs_nz
+            
+            # 4. Smoothing
+            print("  smoothing probabilities...")
+            for i in range(5):
+                probs_vol[..., i] = scipy.ndimage.gaussian_filter(probs_vol[..., i], sigma=1.0)
                 
-            # 5. Re-classify (Argmax) on smoothed probabilities
-            # This cleans up speckles because a lone pixel of GM in WM will be overwhelmed by WM neighbors
-            final_labels = np.argmax(smoothed_probs, axis=3)
+            # Re-normalize sums?
+            # probs_vol /= np.sum(probs_vol, axis=3, keepdims=True) + 1e-9
             
-            # Create output maps
-            maps = [np.zeros_like(data) for _ in range(3)]
-            
-            for i in range(3):
-                # Where mask is true AND final label is i
-                # Note: background (mask=False) remains 0
-                maps[i][(mask) & (final_labels == i)] = 1.0
-            
+            # 5. Extract Tissues (1=CSF, 2=GM, 3=WM)
             # Save files
-            # pve_0 (CSF), pve_1 (GM), pve_2 (WM)
-            for i in range(3):
+            tissues = [1, 2, 3] # Ranks
+            out_maps = [] # For QC plot
+            
+            # Map Probabilities
+            for i, rank in enumerate(tissues):
+                # i=0 -> CSF (rank 1)
+                p_map = probs_vol[..., rank]
                 out_name = f"{output_base}_pve_{i}.nii.gz"
-                nib.save(nib.Nifti1Image(maps[i], affine, img.header), out_name)
+                nib.save(nib.Nifti1Image(p_map, affine, img.header), out_name)
+                out_maps.append(p_map)
                 
-            # Save "Restored" (Bias corrected)
-            restore_name = f"{output_base}_restore.nii.gz"
-            nib.save(img, restore_name)
+            # Bias Corrected (Mock: Multiply original by inverse variability? Hard without real field)
+            # Just save original.
+            nib.save(img, f"{output_base}_restore.nii.gz")
             
             # Generate QC Plot
             qc_plot_path = f"{output_base}_qc.png"
-            self._generate_qc_plot(input_path, maps, sorted_indices, qc_plot_path)
+            self._generate_qc_plot(input_path, out_maps, sorted_indices, qc_plot_path)
             
             return True, qc_plot_path
             
@@ -130,10 +159,6 @@ class Segmentation:
             print(f"Native Segmentation failed: {e}")
             import traceback
             traceback.print_exc()
-            # Fallback mock
-            for i in range(3):
-                 shutil.copy(input_path, f"{output_base}_pve_{i}.nii.gz")
-            shutil.copy(input_path, f"{output_base}_restore.nii.gz")
             return False, None
 
     def _generate_qc_plot(self, t1_path, maps, sorted_indices, out_path):

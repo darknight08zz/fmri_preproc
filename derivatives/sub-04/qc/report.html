@@ -1,0 +1,55 @@
+
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>QC Report: sub-04</title>
+                <style>
+                    body { font-family: 'Segoe UI', sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #f0f2f5; color: #333; }
+                    .card { background: white; padding: 25px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); margin-bottom: 25px; }
+                    h1 { color: #1a1a1a; border-bottom: 2px solid #eaeaea; padding-bottom: 10px; }
+                    h2 { color: #2c3e50; margin-top: 0; }
+                    h3 { color: #34495e; margin-bottom: 10px; }
+                    
+                    /* Table Styling */
+                    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+                    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #eee; }
+                    th { background-color: #f8f9fa; font-weight: 600; color: #555; }
+                    tr:last-child td { border-bottom: none; }
+                    tr:hover { background-color: #fcfcfc; }
+                    
+                    .metric-name { color: #555; font-weight: 500; }
+                    .metric-value { color: #222; font-weight: 700; }
+                    .metric-pass { background-color: #d4edda; color: #155724; }
+                    .metric-warn { background-color: #fff3cd; color: #856404; }
+                    .metric-fail { background-color: #f8d7da; color: #721c24; }
+                    
+                    img { max-width: 100%; height: auto; border-radius: 4px; border: 1px solid #eee; }
+                    .plot-container { margin-bottom: 30px; }
+                </style>
+            </head>
+            <body>
+                <h1>QC Report: sub-04</h1>
+                <p>Generated on 2026-01-28 22:13:26</p>
+                
+                <div class="card">
+                    <h2>Summary Metrics</h2>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Metric</th>
+                                <th>Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr class=""><td class="metric-name">Mean FD (mm)</td><td class="metric-value">0.037</td></tr><tr class=""><td class="metric-name">Max FD (mm)</td><td class="metric-value">0.133</td></tr><tr class=""><td class="metric-name">% Volumes FD > 0.5mm</td><td class="metric-value">0.0</td></tr><tr class="metric-pass"><td class="metric-name">QC Decision</td><td class="metric-value">PASS</td></tr><tr class=""><td class="metric-name">QC Reasons</td><td class="metric-value">Clean scan</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                
+                <div class="card">
+                    <h2>Visualizations</h2>
+                    <div class="plot-container"><h3>Motion Correction</h3><img src="motion_plot.png" alt="Motion Correction"/></div><div class="plot-container"><h3>Coregistration</h3><img src="coreg_check.png" alt="Coregistration"/></div><div class="plot-container"><h3>Segmentation</h3><img src="seg_check.png" alt="Segmentation"/></div><div class="plot-container"><h3>Normalization</h3><img src="norm_check.png" alt="Normalization"/></div><div class="plot-container"><h3>Smoothing</h3><img src="smooth_check.png" alt="Smoothing"/></div>
+                </div>
+            </body>
+            </html>
+            

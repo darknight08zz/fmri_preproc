@@ -4,6 +4,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import shutil
 import numpy as np
 import nibabel as nib
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from fmri_preproc.qc.nodes import QCNode
 from fmri_preproc.func.coregistration import Coregistration
@@ -31,6 +33,8 @@ def test_qc_features():
     metrics = qc._calculate_motion_metrics(par_file)
     print("Motion Metrics:", metrics)
     assert 'Mean FD (mm)' in metrics
+    assert 'QC Decision' in metrics
+    assert metrics['QC Decision'] in ["PASS", "WARN", "FAIL"]
     
     # Test Plot
     qc._generate_motion_plot(par_file, "qc_test_out/motion_plot.png", metrics)

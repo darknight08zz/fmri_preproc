@@ -1,0 +1,7 @@
+{
+    "Mean FD (mm)": 0.037,
+    "Max FD (mm)": 0.133,
+    "% Volumes FD > 0.5mm": 0.0,
+    "QC Decision": "PASS",
+    "QC Reasons": "Clean scan"
+}

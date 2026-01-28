@@ -32,6 +32,9 @@ class QCReport:
                     
                     .metric-name {{ color: #555; font-weight: 500; }}
                     .metric-value {{ color: #222; font-weight: 700; }}
+                    .metric-pass {{ background-color: #d4edda; color: #155724; }}
+                    .metric-warn {{ background-color: #fff3cd; color: #856404; }}
+                    .metric-fail {{ background-color: #f8d7da; color: #721c24; }}
                     
                     img {{ max-width: 100%; height: auto; border-radius: 4px; border: 1px solid #eee; }}
                     .plot-container {{ margin-bottom: 30px; }}
@@ -51,7 +54,7 @@ class QCReport:
                             </tr>
                         </thead>
                         <tbody>
-                            {''.join([f'<tr><td class="metric-name">{k}</td><td class="metric-value">{v}</td></tr>' for k, v in metrics.items()])}
+                            {''.join([f'<tr class="{self._get_row_class(k, v)}"><td class="metric-name">{k}</td><td class="metric-value">{v}</td></tr>' for k, v in metrics.items()])}
                         </tbody>
                     </table>
                 </div>
@@ -70,3 +73,10 @@ class QCReport:
         except Exception as e:
             print(f"QC report generation failed: {e}")
             return False
+
+    def _get_row_class(self, key, value):
+        if key == "QC Decision":
+            if value == "PASS": return "metric-pass"
+            if value == "WARN": return "metric-warn"
+            if value == "FAIL": return "metric-fail"
+        return ""

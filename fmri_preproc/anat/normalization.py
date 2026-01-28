@@ -42,20 +42,33 @@ class Normalization:
             mov_data = self._normalize_intensity(mov_data)
             
             # Optimization (12 DOF: Scale(3), Shear(3), Rot(3), Trans(3))
-            # Start with Identity
+            
+            # 0. Center of Mass Initialization
+            print("  Aligning Centers of Mass...")
+            ref_com = scipy.ndimage.center_of_mass(ref_data)
+            mov_com = scipy.ndimage.center_of_mass(mov_data)
+            translation_init = np.array(ref_com) - np.array(mov_com)
+            # COMs are in index space. Assuming same voxel size/orientation for simplicity of this native impl.
+            # Ideally use affine to map to world. 
+            # If native normalization assumes resampled input, indices might work.
+            # But let's assume index alignment is a good start.
+            
             # Params: [Sx, Sy, Sz, Shxy, Shxz, Shyz, Rx, Ry, Rz, Tx, Ty, Tz]
-            initial_params = np.array([1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+            # Initialize T with COM shift
+            initial_params = np.array([1, 1, 1, 0, 0, 0, 0, 0, 0, translation_init[0], translation_init[1], translation_init[2]])
             
             print(f"Optimizing Affine Transform (12 DOF)...")
             
-            # Powell is slow for 12 params. Limit iters for this implementation.
+            # Powell is slow for 12 params. 
+            # Improvement: Multi-stage? Rigid then Affine?
+            # For now: Increase iterations and tolerance.
             res = scipy.optimize.minimize(
                 self._nmi_loss_function,
                 initial_params,
                 args=(ref_data, mov_data),
                 method='Powell',
-                tol=1e-1,
-                options={'maxiter': 5, 'disp': False} # Very low iter for speed in demo
+                tol=1e-2, # Stricter tolerance
+                options={'maxiter': 50, 'disp': True} # Increased from 5 to 50
             )
             
             best_params = res.x
