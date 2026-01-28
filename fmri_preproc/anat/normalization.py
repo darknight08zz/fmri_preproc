@@ -68,10 +68,6 @@ class Normalization:
             mat_path = output_base + "_0GenericAffine.mat"
             np.savetxt(mat_path, mat)
             
-            # Save Matrix
-            mat_path = output_base + "_0GenericAffine.mat"
-            np.savetxt(mat_path, mat)
-            
             # --- Non-Linear Demons Registration ---
             print(f"Running Fast Demons (Non-Linear) Registration...")
             
@@ -213,45 +209,68 @@ class Normalization:
             tpl_data = tpl_img.get_fdata()
             warped_data = warped_img.get_fdata()
             
-            # Middle slice
-            z = tpl_data.shape[2] // 2
-            tpl_slice = tpl_data[:, :, z].T
-            warped_slice = warped_data[:, :, z].T
+            # Use middle slices for 3 views to be robust
+            x, y, z = tpl_data.shape
+            mx, my, mz = x // 2, y // 2, z // 2
             
-            # Edge Detection using Scipy (no skimage)
-            # Normalize
-            tpl_slice = (tpl_slice - tpl_slice.min()) / (tpl_slice.max() - tpl_slice.min())
+            # Use Template geometry for slicing
+            slices_tpl = [
+                tpl_data[mx, :, :].T,
+                tpl_data[:, my, :].T,
+                tpl_data[:, :, mz].T
+            ]
             
-            dx = scipy.ndimage.sobel(tpl_slice, 0)
-            dy = scipy.ndimage.sobel(tpl_slice, 1)
-            mag = np.hypot(dx, dy)
-            edges = mag > (mag.max() * 0.25)
+            # Warped data should match template space
+            slices_warped = [
+                warped_data[mx, :, :].T,
+                warped_data[:, my, :].T,
+                warped_data[:, :, mz].T
+            ]
             
-            # Plot
-            fig, ax = plt.subplots(1, 1, figsize=(10, 10))
-            ax.imshow(warped_slice, cmap='gray', origin='lower')
+            # Aspect ratios
+            zooms = tpl_img.header.get_zooms()[:3]
+            aspects = [
+                zooms[2]/zooms[1], # Sag: Z/Y
+                zooms[2]/zooms[0], # Cor: Z/X
+                zooms[1]/zooms[0]  # Axi: Y/X
+            ]
             
-            # Overlay edges
-            edge_overlay = np.zeros(edges.shape + (4,))
-            edge_overlay[edges, 0] = 1.0 # Red
-            edge_overlay[edges, 3] = 1.0 # Alpha
+            titles = ["Sagittal", "Coronal", "Axial"]
             
-            ax.imshow(edge_overlay, origin='lower')
-            ax.set_title("Warped Image (Gray) + Template Edges (Red)")
-            ax.axis('off')
+            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
             
-            plt.savefig(out_path, dpi=100)
+            for i, ax in enumerate(axes):
+                # Background: Template (Gray)
+                tpl_slice = slices_tpl[i]
+                tpl_slice = (tpl_slice - np.min(tpl_slice)) / (np.max(tpl_slice) - np.min(tpl_slice) + 1e-9)
+                ax.imshow(tpl_slice, cmap='gray', origin='lower', aspect=aspects[i])
+                
+                # Foreground: Warped Subject Edges (Red)
+                warped_slice = slices_warped[i]
+                warped_slice = (warped_slice - np.min(warped_slice)) / (np.max(warped_slice) - np.min(warped_slice) + 1e-9)
+                
+                dx = scipy.ndimage.sobel(warped_slice, 0)
+                dy = scipy.ndimage.sobel(warped_slice, 1)
+                mag = np.hypot(dx, dy)
+                edges = mag > (np.max(mag) * 0.25)
+                
+                edge_overlay = np.zeros(edges.shape + (4,))
+                edge_overlay[edges, 0] = 1.0 # Red
+                edge_overlay[edges, 3] = 1.0 # Alpha
+                
+                ax.imshow(edge_overlay, origin='lower', aspect=aspects[i])
+                ax.set_title(titles[i])
+                ax.axis('off')
+            
+            plt.suptitle(f"Normalization Check: Warped Subject Edges (Red) on Template (Gray)", fontsize=14)
+            plt.tight_layout()
+            plt.savefig(out_path, dpi=150)
             plt.close(fig)
             
         except Exception as e:
             print(f"Norm QC Plot failed: {e}")
-
-            out_warped = output_base + "_error.nii.gz"
-            shutil.copy(input_path, out_warped)
-            # Dummy mat
-            mat_path = output_base + "_0GenericAffine.mat"
-            np.savetxt(mat_path, np.eye(4))
-            return out_warped, [mat_path]
+            import traceback
+            traceback.print_exc()
 
     def _create_dummy_template(self):
         print("Creating dummy MNI template...")

@@ -17,12 +17,24 @@ class QCReport:
             <head>
                 <title>QC Report: {subject}</title>
                 <style>
-                    body {{ font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #f0f2f5; }}
-                    .card {{ background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }}
-                    h1 {{ color: #1a1a1a; }}
-                    .metric {{ display: flex; justify-content: space-between; border-bottom: 1px solid #eee; padding: 10px 0; }}
-                    .metric:last-child {{ border-bottom: none; }}
-                    img {{ max-width: 100%; height: auto; border-radius: 4px; }}
+                    body {{ font-family: 'Segoe UI', sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #f0f2f5; color: #333; }}
+                    .card {{ background: white; padding: 25px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); margin-bottom: 25px; }}
+                    h1 {{ color: #1a1a1a; border-bottom: 2px solid #eaeaea; padding-bottom: 10px; }}
+                    h2 {{ color: #2c3e50; margin-top: 0; }}
+                    h3 {{ color: #34495e; margin-bottom: 10px; }}
+                    
+                    /* Table Styling */
+                    table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+                    th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #eee; }}
+                    th {{ background-color: #f8f9fa; font-weight: 600; color: #555; }}
+                    tr:last-child td {{ border-bottom: none; }}
+                    tr:hover {{ background-color: #fcfcfc; }}
+                    
+                    .metric-name {{ color: #555; font-weight: 500; }}
+                    .metric-value {{ color: #222; font-weight: 700; }}
+                    
+                    img {{ max-width: 100%; height: auto; border-radius: 4px; border: 1px solid #eee; }}
+                    .plot-container {{ margin-bottom: 30px; }}
                 </style>
             </head>
             <body>
@@ -31,12 +43,22 @@ class QCReport:
                 
                 <div class="card">
                     <h2>Summary Metrics</h2>
-                    {''.join([f'<div class="metric"><span>{k}</span><strong>{v}</strong></div>' for k, v in metrics.items()])}
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Metric</th>
+                                <th>Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {''.join([f'<tr><td class="metric-name">{k}</td><td class="metric-value">{v}</td></tr>' for k, v in metrics.items()])}
+                        </tbody>
+                    </table>
                 </div>
                 
                 <div class="card">
                     <h2>Visualizations</h2>
-                    {''.join([f'<h3>{k}</h3><img src="{v}" alt="{k}"/>' for k, v in plots.items()])}
+                    {''.join([f'<div class="plot-container"><h3>{k}</h3><img src="{v}" alt="{k}"/></div>' for k, v in plots.items()])}
                 </div>
             </body>
             </html>

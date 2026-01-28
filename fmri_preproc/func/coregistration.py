@@ -109,39 +109,73 @@ class Coregistration:
             ref_data = ref_img.get_fdata()
             reg_data = reg_img.get_fdata()
             
-            # Middle slice
-            z = ref_data.shape[2] // 2
-            ref_slice = ref_data[:, :, z].T
-            reg_slice = reg_data[:, :, z].T
+            # Handle 4D ref (e.g. Mean Func vs just Func)
+            if len(ref_data.shape) > 3:
+                ref_data = np.mean(ref_data, axis=3)
             
-            # Edge Detection using Scipy (no skimage)
-            # Normalize first
-            ref_slice = (ref_slice - ref_slice.min()) / (ref_slice.max() - ref_slice.min())
+            # Get dimensions
+            x, y, z = ref_data.shape
+            mx, my, mz = x // 2, y // 2, z // 2
             
-            # Gradient Magnitude for edges
-            dx = scipy.ndimage.sobel(ref_slice, 0)
-            dy = scipy.ndimage.sobel(ref_slice, 1)
-            mag = np.hypot(dx, dy)
-            edges = mag > (mag.max() * 0.25) # Threshold
+            # Slices
+            slices_ref = [
+                ref_data[mx, :, :].T, # Sagittal (Y-Z)
+                ref_data[:, my, :].T, # Coronal (X-Z)
+                ref_data[:, :, mz].T  # Axial (X-Y)
+            ]
             
-            # Plot
-            fig, ax = plt.subplots(1, 1, figsize=(10, 10))
-            ax.imshow(reg_slice, cmap='gray', origin='lower')
-            # Overlay edges (red, transparent)
-            # Create RGBA for edges
-            edge_overlay = np.zeros(edges.shape + (4,))
-            edge_overlay[edges, 0] = 1.0 # Red
-            edge_overlay[edges, 3] = 1.0 # Alpha
+            slices_reg = [
+                reg_data[mx, :, :].T,
+                reg_data[:, my, :].T,
+                reg_data[:, :, mz].T
+            ]
             
-            ax.imshow(edge_overlay, origin='lower')
-            ax.set_title("Registered Image (Gray) + Reference Edges (Red)")
-            ax.axis('off')
+            # Aspect ratios
+            zooms = ref_img.header.get_zooms()[:3]
+            aspects = [
+                zooms[2]/zooms[1], # Sag: Z/Y
+                zooms[2]/zooms[0], # Cor: Z/X
+                zooms[1]/zooms[0]  # Axi: Y/X
+            ]
             
-            plt.savefig(out_path, dpi=100)
+            titles = ["Sagittal", "Coronal", "Axial"]
+            
+            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+            
+            for i, ax in enumerate(axes):
+                # Background: Reference (Gray)
+                ref_slice = slices_ref[i]
+                 # Normalize for display
+                ref_slice = (ref_slice - np.min(ref_slice)) / (np.max(ref_slice) - np.min(ref_slice) + 1e-9)
+                ax.imshow(ref_slice, cmap='gray', origin='lower', aspect=aspects[i])
+                
+                # Foreground: Registration Edges (Red)
+                reg_slice = slices_reg[i]
+                reg_slice = (reg_slice - np.min(reg_slice)) / (np.max(reg_slice) - np.min(reg_slice) + 1e-9)
+                
+                # Edges
+                dx = scipy.ndimage.sobel(reg_slice, 0)
+                dy = scipy.ndimage.sobel(reg_slice, 1)
+                mag = np.hypot(dx, dy)
+                edges = mag > (np.max(mag) * 0.25)
+                
+                edge_overlay = np.zeros(edges.shape + (4,))
+                edge_overlay[edges, 0] = 1.0 # Red
+                edge_overlay[edges, 3] = 1.0 # Alpha
+                
+                ax.imshow(edge_overlay, origin='lower', aspect=aspects[i])
+                ax.set_title(titles[i])
+                ax.axis('off')
+            
+            plt.suptitle(f"Coregistration Check: Red Edges (Source) on Gray (Ref)", fontsize=14)
+            plt.tight_layout()
+            plt.savefig(out_path, dpi=150)
             plt.close(fig)
             
         except Exception as e:
             print(f"Coreg QC Plot failed: {e}")
+            import traceback
+            traceback.print_exc()
 
         except Exception as e:
             print(f"Native Coregistration failed: {e}")

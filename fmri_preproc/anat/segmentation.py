@@ -140,30 +140,100 @@ class Segmentation:
         try:
             import matplotlib.pyplot as plt
             
-            t1 = nib.load(t1_path).get_fdata()
-            sl = t1.shape[2] // 2
+            t1_img = nib.load(t1_path)
+            t1 = t1_img.get_fdata()
             
-            fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+            # Use middle slices for 3 views to be robust
+            x, y, z = t1.shape
+            mx, my, mz = x // 2, y // 2, z // 2
             
-            # T1
-            axes[0].imshow(t1[..., sl].T, cmap='gray', origin='lower')
-            axes[0].set_title("T1w")
-            axes[0].axis('off')
+            slices = [
+                 (t1[mx, :, :].T, "Sagittal"),
+                 (t1[:, my, :].T, "Coronal"),
+                 (t1[:, :, mz].T, "Axial")
+            ]
             
-            titles = ["CSF", "GM", "WM"]
-            for i in range(3):
-                # Map sorted index back to map list order? 
-                # maps[0] corresponds to sorted_indices[0] (CSF), etc.
-                tissue_map = maps[i]
-                axes[i+1].imshow(tissue_map[..., sl].T, cmap='gray', origin='lower')
-                axes[i+1].set_title(titles[i])
-                axes[i+1].axis('off')
+            # Maps: list of 3 ND arrays
+            # We want to form an RGB image where:
+            # R = GM, G = WM, B = CSF? Or standard:
+            # Red=GM, Blue=WM, Green=CSF is requested in prompt.
+            # maps[0]=CSF, maps[1]=GM, maps[2]=WM (as sorted in run())
+            # Wait, `run` logic: "maps[0] corresponds to sorted_indices[0]"
+            # In `run`: sorted_indices = argsort(centers). 
+            # Darkest(0) -> Brightest(2).
+            # T1: CSF(Dark) < GM < WM(Bright).
+            # So: 0=CSF, 1=GM, 2=WM.
+             
+            csf_vol = maps[0]
+            gm_vol = maps[1]
+            wm_vol = maps[2]
+            
+            # Prepare RGB overlays for each slice
+            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+            
+            zooms = t1_img.header.get_zooms()[:3]
+            aspects = [zooms[2]/zooms[1], zooms[2]/zooms[0], zooms[1]/zooms[0]]
+            
+            for i, (slice_t1, title) in enumerate(slices):
+                ax = axes[i]
                 
+                # Normalize T1
+                slice_t1_norm = (slice_t1 - np.min(slice_t1)) / (np.max(slice_t1) - np.min(slice_t1) + 1e-9)
+                
+                # Get map slices
+                if i == 0:   # Sag
+                    s_csf = csf_vol[mx, :, :].T
+                    s_gm = gm_vol[mx, :, :].T
+                    s_wm = wm_vol[mx, :, :].T
+                elif i == 1: # Cor
+                    s_csf = csf_vol[:, my, :].T
+                    s_gm = gm_vol[:, my, :].T
+                    s_wm = wm_vol[:, my, :].T
+                else:        # Axi
+                    s_csf = csf_vol[:, :, mz].T
+                    s_gm = gm_vol[:, :, mz].T
+                    s_wm = wm_vol[:, :, mz].T
+                
+                # Create RGB
+                # R=GM, G=CSF, B=WM (Requested: GM=Red, WM=Blue, CSF=Green)
+                rgb = np.zeros(slice_t1.shape + (3,))
+                rgb[..., 0] = s_gm  # Red
+                rgb[..., 1] = s_csf # Green
+                rgb[..., 2] = s_wm  # Blue
+                
+                # Alpha depends on total probability? 
+                # Or just additive blending?
+                # We can overlay RGB on Grayscale.
+                # If we use imshow(RGB), it replaces. We want alpha.
+                # Construct RGBA
+                
+                # Combined probability
+                total_prob = s_gm + s_csf + s_wm
+                total_prob = np.clip(total_prob, 0, 1)
+                
+                # Normalize RGB by total prob to blend colors correctly?
+                # Actually if GM=0.5, WM=0.5, we want purple.
+                # Our simple assignment works.
+                
+                # Display T1
+                ax.imshow(slice_t1_norm, cmap='gray', interpolation='nearest', aspect=aspects[i])
+                
+                # Display Overlay
+                # Matplotlib imshow(RGBA)
+                rgba = np.dstack((rgb, total_prob * 0.5)) # 0.5 opacity
+                
+                ax.imshow(rgba, interpolation='nearest', aspect=aspects[i])
+                
+                ax.set_title(f"{title}\nRed:GM Green:CSF Blue:WM")
+                ax.axis('off')
+            
             plt.tight_layout()
-            plt.savefig(out_path)
+            plt.savefig(out_path, dpi=150)
             plt.close()
         except Exception as e:
             print(f"Seg QC Plot failed: {e}")
+            import traceback
+            traceback.print_exc()
 
         except Exception as e:
             print(f"Native Segmentation failed: {e}")
