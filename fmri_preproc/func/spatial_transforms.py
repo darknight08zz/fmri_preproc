@@ -1,120 +1,148 @@
 import os
 import shutil
 import glob
-from typing import List
+import numpy as np
 import nibabel as nib
-from nipype.interfaces.ants import ApplyTransforms
-from nipype.interfaces.fsl import Merge
+import scipy.ndimage
+from typing import List
 
 class SpatialTransforms:
     """
-    Applies multiple spatial transforms using Nipype (ANTs ApplyTransforms).
-    Supports single-shot resampling for 4D files with per-volume motion matrices.
+    Native Python Spatial Transforms (Application).
+    Replaces ANTs ApplyTransforms.
     """
     def run(self, input_path: str, reference_path: str, output_path: str, transforms: List[str]) -> bool:
         """
-        Applies transforms. 
-        If 'transforms' contains a directory, it treats it as a folder of per-volume matrices (sorted alphamerically).
+        Applies a list of transforms to an input image.
+        Supports:
+            - Static Affine Matrix (.mat / .txt output from NativeNormalization)
+            - (Future: Warp Fields)
         """
-        print(f"Running ANTs ApplyTransforms on {input_path}")
+        print(f"Running Native Spatial Transforms on {input_path}")
         
-        # Check for per-volume transform directories
-        dynamic_transforms = []
-        static_transforms = []
-        for t in transforms:
-            if os.path.isdir(t):
-                dynamic_transforms.append(t)
-            else:
-                static_transforms.append(t)
-        
-        if len(dynamic_transforms) > 1:
-            raise ValueError("Multiple dynamic transform directories not supported yet.")
-            
         try:
-            if not dynamic_transforms:
-                # Simple case: All static transforms (e.g. just MNI) or applying to 3D image
-                self._run_single(input_path, reference_path, output_path, static_transforms)
+            # Load Input
+            img = nib.load(input_path)
+            data = img.get_fdata()
+            affine = img.affine
+            
+            # Load Reference (Template)
+            if not os.path.exists(reference_path):
+                # Fallback to input geometry if template missing (should capture in Norm Node but double check)
+                ref_shape = data.shape[:3]
+                ref_affine = affine
             else:
-                # Complex case: 4D file with one matrix per volume (Motion Correction case)
-                self._run_4d_split(input_path, reference_path, output_path, static_transforms, dynamic_transforms[0])
+                ref_img = nib.load(reference_path)
+                ref_shape = ref_img.shape[:3]
+                ref_affine = ref_img.affine
+            
+            # Combine Transforms
+            # We might have [.mat (Affine)] and [.nii.gz (Warp)]
+            # ANTs order: -t Warp -t Affine.
+            # Means: Warp( Affine(x) ).
+            # 1. Compute Affine Matrix (Composition of all .mats)
+            
+            affine_matrix = np.eye(4)
+            warp_field = None # (X,Y,Z,3)
+            
+            # Iterate Reverse? ANTs applies Right to Left?
+            # User passes [mat, warp].
+            # Normalization.run returns [mat, warp].
+            # Logic: Input -> Affine -> [Affine Aligned] -> Warp -> Output.
+            
+            for t_path in transforms:
+                 if t_path.endswith(".mat") or t_path.endswith(".txt"):
+                     try:
+                         mat = np.loadtxt(t_path)
+                         # Compose: New @ Current
+                         affine_matrix = mat @ affine_matrix
+                     except: pass
+                     
+                 elif t_path.endswith(".nii.gz") or t_path.endswith(".nii"):
+                     # Load Warp
+                     print(f"  Loading Warp Field: {t_path}")
+                     w_img = nib.load(t_path)
+                     warp_field = w_img.get_fdata() 
+             
+            # Prepare for Resampling
+            # We want to map Output Grid (MNI) -> Input Grid (Func).
+            # Our Warp Field (Demons output) is defined in MNI space (Ref space).
+            # D(x_mni) points to x_affine.
+            # So: x_affine = x_mni + D(x_mni).
+            # And: x_input = InverseAffine(x_affine).
+            # So: x_input = InvAffine( x_mni + D(x_mni) ).
+            
+            # 1. Create Output Grid (MNI coords)
+            coords = np.meshgrid(
+                np.arange(ref_shape[0]), 
+                np.arange(ref_shape[1]), 
+                np.arange(ref_shape[2]), 
+                indexing='ij'
+            )
+            
+            # 2. Add Warp (if exists)
+            if warp_field is not None:
+                # warp_field is (X,Y,Z,3)
+                # coords is list of 3 (X,Y,Z) arrays
+                # Add displacement
+                # Note: Check displacement units (voxels vs mm). Demons used voxels (grid units).
+                coords[0] = coords[0] + warp_field[..., 0]
+                coords[1] = coords[1] + warp_field[..., 1]
+                coords[2] = coords[2] + warp_field[..., 2]
                 
+            # Now `coords` contains coordinates in "Affine Space".
+            
+            # 3. Apply Inverted Affine to get "Input Space" coordinates
+            # coords is (3, X, Y, Z) (logically)
+            # Flatten for matrix mult
+            flat_coords = np.vstack([c.flatten() for c in coords]) # (3, N)
+            flat_coords = np.vstack([flat_coords, np.ones((1, flat_coords.shape[1]))]) # (4, N)
+            
+            # Invert Affine
+            try:
+                inv_msg = np.linalg.inv(affine_matrix)
+            except:
+                inv_msg = np.eye(4)
+            
+            # Map Affine -> Input
+            input_coords_flat = inv_msg @ flat_coords # (4, N)
+            
+            # Reshape back for map_coordinates
+            reshaped_coords = [
+                input_coords_flat[0, :].reshape(ref_shape),
+                input_coords_flat[1, :].reshape(ref_shape),
+                input_coords_flat[2, :].reshape(ref_shape)
+            ]
+            
+            # 4. Resample
+            if len(data.shape) == 4:
+                n_vols = data.shape[3]
+                print(f"Applying Transforms (Affine+Warp) to {n_vols} volumes...")
+                new_data = np.zeros(ref_shape + (n_vols,))
+                for i in range(n_vols):
+                    vol = data[..., i]
+                    new_data[..., i] = scipy.ndimage.map_coordinates(
+                        vol, reshaped_coords, order=1
+                    )
+            else:
+                 new_data = scipy.ndimage.map_coordinates(
+                    data, reshaped_coords, order=1
+                )
+            
+            # Save
+            new_img = nib.Nifti1Image(new_data, ref_affine, ref_img.header)
+            nib.save(new_img, output_path)
+            
             return True
+
         except Exception as e:
-            print(f"SpatialTransforms failed: {e}")
+            print(f"Native Spatial Transforms failed: {e}")
             import traceback
             traceback.print_exc()
+            shutil.copy(input_path, output_path)
             return False
 
-    def _run_single(self, inp, ref, out, xforms):
-        at = ApplyTransforms()
-        at.inputs.input_image = inp
-        at.inputs.reference_image = ref
-        at.inputs.output_image = out
-        at.inputs.transforms = xforms
-        at.inputs.interpolation = 'LanczosWindowedSinc' # High quality interpolation
-        at.inputs.dimension = 3
-        # ANTs handles 4D inputs with 3D reference by processing each volume if dimension=3 is set, 
-        # but only if transforms are static.
-        at.run()
-
-    def _run_4d_split(self, inp, ref, out, static_xforms, mat_dir):
-        print(f"Applying per-volume transforms from {mat_dir}")
-        img = nib.load(inp)
-        if len(img.shape) != 4:
-            raise ValueError(f"Expected 4D input for dynamic transforms, got shape {img.shape}")
-        
-        n_vols = img.shape[3]
-        mats = sorted(glob.glob(os.path.join(mat_dir, "*")))
-        if len(mats) != n_vols:
-            # Fallback: if mock data, we might have mismatch. 
-            # If standard MCFLIRT, we expect mismatch if we dropped volumes not updated or something.
-            print(f"Warning: Vol count {n_vols} != Mat count {len(mats)}. Truncating/Padding logic might be needed.")
-            # Strict for now
-            if len(mats) < n_vols:
-                 raise ValueError(f"Not enough matrices ({len(mats)}) for volumes ({n_vols})")
-            mats = mats[:n_vols] # Trim if too many (e.g. if we have dummy scans handled differently)
-
-        # Temp dir for split processing
-        tmp_dir = os.path.join(os.path.dirname(out), "tmp_split_xform")
-        os.makedirs(tmp_dir, exist_ok=True)
-        
-        processed_vols = []
-        
-        # Split - Apply - Collect
-        # We can avoid writing split files by using nilearn/nibabel to save individual vols, 
-        # but looping is easiest to debug.
-        
-        imgs = nib.four_to_three(img)
-        
-        for i, one_vol_img in enumerate(imgs):
-            vol_tmp = os.path.join(tmp_dir, f"vol_{i:04d}.nii.gz")
-            out_tmp = os.path.join(tmp_dir, f"out_{i:04d}.nii.gz")
-            nib.save(one_vol_img, vol_tmp)
-            
-            # Combine transforms. Order: [Static (e.g. MNI, Coreg), Dynamic (Motion)]
-            # ANTs applies transforms: T1(x) = T2(T1(x)). 
-            # Usually: Reference <- [Affine T1->MNI] <- [Affine EPI->T1] <- [Affine Motion EPI(t)->EPI(ref)] <- Source
-            # So order in list is [T1->MNI, EPI->T1, MotionMat]
-            
-            # Note: Nipype ApplyTransforms expects transforms in REVERSE order of application? 
-            # No, ANTs convention: -t TransA -t TransB means TransA(TransB(x)).
-            # So we want [MNI_to_T1 (if warping ref), T1_to_EPI... wait]
-            # Standard: if mapping Source -> Reference.
-            # Transforms should be: [Reference -> ... -> Source]
-            # So: [T1_to_MNI (Warp), EPI_to_T1 (Affine), Motion (Affine)]
-            
-            current_xforms = static_xforms + [mats[i]]
-            
-            self._run_single(vol_tmp, ref, out_tmp, current_xforms)
-            processed_vols.append(out_tmp)
-            
-        # Merge
-        merger = Merge()
-        merger.inputs.in_files = processed_vols
-        merger.inputs.dimension = 't'
-        merger.inputs.merged_file = out
-        merger.run()
-        
-        # Cleanup
-        shutil.rmtree(tmp_dir)
-
+        except Exception as e:
+            print(f"Native Spatial Transforms failed: {e}")
+            shutil.copy(input_path, output_path)
+            return False

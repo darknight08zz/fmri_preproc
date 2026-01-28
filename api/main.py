@@ -6,7 +6,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.routers import datasets, validation_router, pipeline, conversion
+from api.routers import datasets, validation_router, conversion
 
 app = FastAPI(
     title="fMRI Preproc API",
@@ -27,8 +27,9 @@ from fastapi.staticfiles import StaticFiles
 
 app.include_router(datasets.router)
 app.include_router(validation_router.router)
-app.include_router(pipeline.router)
 app.include_router(conversion.router)
+from api.routers import pipeline
+app.include_router(pipeline.router)
 
 # Mount converted data for static access
 # This assumes 'converted_data' is in the project root

@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv
+
+# Next.js / Web
+.next/
+build/
+dist/
+out/
+.vercel
+
+# Neuroimaging Data (Large files)
+*.nii
+*.nii.gz
+*.img
+*.hdr
+*.mnc
+
+# System
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo

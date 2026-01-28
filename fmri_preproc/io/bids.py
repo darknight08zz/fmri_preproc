@@ -24,6 +24,10 @@ class BIDSDataset:
             
         scans = {'anat': [], 'func': []}
         
+        # Strip sub- prefix if present, as BIDSLayout stores pure entities
+        if subject.startswith('sub-'):
+            subject = subject[4:]
+        
         # Anat (T1w)
         # return_type='file' gives paths, 'obj' gives BIDSFile objects
         t1s = self.layout.get(subject=subject, datatype='anat', suffix='T1w', extension=['nii', 'nii.gz'])

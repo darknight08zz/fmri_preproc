@@ -1,0 +1,21 @@
+{
+    "Modality": "func",
+    "RepetitionTime": 3.0,
+    "SliceTiming": [
+        0.0
+    ],
+    "ImageOrientationPatientDICOM": [
+        0.99619469794222,
+        0.0,
+        -0.0871557444567,
+        0.0,
+        1.0,
+        0.0
+    ],
+    "SliceThickness": 3.4000000953674,
+    "TaskName": "rest",
+    "FlipAngle": 90.0,
+    "Manufacturer": "SIEMENS",
+    "ManufacturersModelName": "Prisma",
+    "MagneticFieldStrength": 3.0
+}
