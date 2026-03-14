@@ -1,148 +1,151 @@
-
 import numpy as np
 import nibabel as nib
 from scipy.ndimage import affine_transform
 import matplotlib.pyplot as plt
 
+
 class Reslicer:
     """
-    Applies estimated motion parameters to reslice 4D fMRI data
-    and generates mean images and motion plots.
+    Applies estimated motion parameters to reslice 4D fMRI data,
+    and generates mean image and motion QA plots.
+
+    The reslice logic (offset formula, scipy call) was correct in the
+    original. Minor improvements added:
+    - float32 enforced on output to save memory
+    - Interpolation order exposed as parameter (default=1, trilinear)
+    - Cleaner comments on the inverse-mapping logic
     """
-    
+
     def __init__(self, data, affine, header, output_paths):
         """
-        Initialize the reslicer.
-        
         Args:
-            data (numpy.ndarray): Original 4D data.
-            affine (numpy.ndarray): Original affine matrix.
-            header (nibabel.nifti1.Nifti1Header): Original header.
-            output_paths (dict): Dictionary of output paths from Loader.
+            data         (np.ndarray): 4D data (X, Y, Z, T)
+            affine       (np.ndarray): 4x4 affine matrix
+            header                   : NIfTI header
+            output_paths (dict)      : paths from VolumeLoader.get_output_filenames()
         """
-        self.data = data
-        self.affine = affine
-        self.header = header
+        self.data         = data.astype(np.float32)
+        self.affine       = affine
+        self.header       = header
         self.output_paths = output_paths
-        self.dims = data.shape[:3]
-        self.n_volumes = data.shape[3]
-        
-    def reslice(self, motion_matrices):
+        self.dims         = data.shape[:3]
+        self.n_volumes    = data.shape[3]
+
+    # ----------------------------------------------------------
+    # Reslice
+    # ----------------------------------------------------------
+
+    def reslice(self, motion_matrices, interp_order=1):
         """
-        Reslices the data using the estimated transformation matrices.
-        
+        Reslice volumes using estimated transformation matrices.
+
+        Inverse mapping logic:
+            estimate.py defined the FORWARD transform:
+                coords_moving = R @ (coords_ref - center) + center + T
+                             = R @ coords_ref + (center + T - R @ center)
+
+            scipy.ndimage.affine_transform uses:
+                output[o] = input[matrix @ o + offset]
+
+            So matrix = R  and  offset = center + T - R @ center
+            This is EXACTLY the inverse mapping (Output=Ref → Input=Moving),
+            which is what we need for correct interpolation.
+
         Args:
-            motion_matrices (numpy.ndarray): (N, 4, 4) array of affine matrices.
-            
+            motion_matrices (np.ndarray): (N, 4, 4) array of affine matrices
+            interp_order    (int)       : 1=trilinear (default), 3=cubic
+
         Returns:
-            numpy.ndarray: Resliced 4D data.
+            np.ndarray: Resliced 4D data (float32)
         """
-        print("Reslicing volumes...")
-        resliced_data = np.zeros_like(self.data)
-        
-        # Grid for interpolation
-        # In reality, we want to map Target -> Source
-        # If Matrix M maps Source -> Target (Ref), then we need M^-1 to pull from Source
-        # Standard approach:
-        #   New_Voxel_Coord = inv(M) * Old_Voxel_Coord
-        
+        print("[RESLICE] Reslicing volumes...")
+        resliced_data = np.zeros_like(self.data, dtype=np.float32)
+
+        center = np.array(self.dims, dtype=np.float64) / 2.0
+
         for t in range(self.n_volumes):
+
             if t % 10 == 0:
-                print(f"  Reslicing volume {t}/{self.n_volumes}...")
-                
+                print(f"  Volume {t:3d}/{self.n_volumes}")
+
             M = motion_matrices[t]
-            
-            # Inverse of the estimated transform to pull data from original volume
-            # The estimated params map Ref -> Moving (or vice-versa depending on cost function definition)
-            # In estimate.py we minimized SSD(Ref, Transformed(Moving))
-            # So params define Moving -> Ref
-            # affine_transform uses the inverse convention (Output -> Input) automatically if we provide matrix?
-            # Scipy affine_transform(input, matrix) defines: output[i] = input[matrix @ i]
-            # So if M maps Moving -> Ref (Target), and we want to fill Target, we need Mapping Target -> Moving
-            # Which is indeed inv(M).
-            # BUT scipy.ndimage.affine_transform expects the INVERSE mapping by default (or forward if we interpret differently?)
-            # Doc: "The matrix M maps the output coordinates to the input coordinates."
-            # So we need M that maps Ref (Output) -> Moving (Input).
-            # Our estimated M maps Ref -> Moving in estimate.py logic ( R * coords + T )?
-            # Wait, in estimate.py: transformed_coords = R @ coords + T
-            # This mapped Reference Grid -> Moving Space. 
-            # So the matrix constructed from params IS the mapping Output(Ref) -> Input(Moving).
-            # So we can pass it directly to affine_transform!
-            
-            # However, we must account for the center of rotation used in estimate.py
-            # Center of rotation was image center.
-            # Scipy affine_transform rotates around (0,0,0) by default.
-            # We need to compose: Translate(-Center) -> Rotate -> Translate(Center)
-            # Or just use the already computed transform if it accounts for it?
-            # In estimate.py output: R @ (x - c) + c + T
-            # = R@x - R@c + c + T
-            # = R@x + (c + T - R@c)
-            # So the effective offset is (c + T - R@c).
-            
-            # Let's reconstruct the full affine for Scipy
-            center = np.array(self.dims) / 2.0
-            
-            # Extract 3x3 rotation and translation from 4x4 M
-            R = M[:3, :3]
-            T = M[:3, 3] # This T is from build_matrix, which is just translation
-            
-            # The offset required for scipy:
+            R = M[:3, :3].astype(np.float64)
+            T = M[:3,  3].astype(np.float64)   # [tx, ty, tz]
+
+            # Offset for scipy inverse mapping:
+            # output[o] = input[R @ o + offset]
+            # where offset = center + T - R @ center
             offset = center + T - R @ center
-            
+
             resliced_data[..., t] = affine_transform(
                 self.data[..., t],
-                matrix=M[:3, :3], # Rotation part
-                offset=offset,    # Offset part
-                order=1 # Linear interpolation (Trilinear) - efficient and standard
-            )
-            
+                matrix=R,
+                offset=offset,
+                order=interp_order,
+                mode='constant',
+                cval=0.0,
+                prefilter=(interp_order > 1)
+            ).astype(np.float32)
+
         return resliced_data
-        
+
+    # ----------------------------------------------------------
+    # Save outputs
+    # ----------------------------------------------------------
+
     def save_outputs(self, resliced_data, motion_params):
         """
-        Saves the resliced 4D file, mean image, and motion parameters.
+        Save resliced 4D NIfTI, mean image, motion parameters (.txt),
+        and motion QA plot (.png).
         """
-        print("Saving outputs...")
-        
-        # 1. Save Resliced 4D
-        resliced_img = nib.Nifti1Image(resliced_data, self.affine, self.header)
+        print("[RESLICE] Saving outputs...")
+
+        # 1. Resliced 4D
+        resliced_img = nib.Nifti1Image(
+            resliced_data.astype(np.float32), self.affine, self.header
+        )
         nib.save(resliced_img, self.output_paths['resliced'])
-        print(f"  Saved resliced data: {self.output_paths['resliced']}")
-        
-        # 2. Save Mean Image
-        mean_data = np.mean(resliced_data, axis=3)
-        mean_img = nib.Nifti1Image(mean_data, self.affine, self.header)
+        print(f"  Resliced 4D  : {self.output_paths['resliced']}")
+
+        # 2. Mean image (computed from resliced data — SPM behavior)
+        mean_data = np.mean(resliced_data, axis=3).astype(np.float32)
+        mean_img  = nib.Nifti1Image(mean_data, self.affine, self.header)
         nib.save(mean_img, self.output_paths['mean'])
-        print(f"  Saved mean image: {self.output_paths['mean']}")
-        
-        # 3. Save Motion Parameters
+        print(f"  Mean image   : {self.output_paths['mean']}")
+
+        # 3. Motion parameters (.txt) — SPM rp_ format
         np.savetxt(self.output_paths['motion_params'], motion_params, fmt='%.6f')
-        print(f"  Saved motion parameters: {self.output_paths['motion_params']}")
-        
-        # 4. Plot Motion (Bonus QA)
+        print(f"  Motion params: {self.output_paths['motion_params']}")
+
+        # 4. Motion QA plot
         self._plot_motion(motion_params)
-        
+
+    # ----------------------------------------------------------
+    # Motion QA plot
+    # ----------------------------------------------------------
+
     def _plot_motion(self, params):
         """
-        Generates a motion plot similar to SPM/FSL.
+        SPM-style motion plot: translations (mm) and rotations (rad).
         """
-        plt.figure(figsize=(10, 6))
-        
-        # Translations (first 3 cols)
-        plt.subplot(2, 1, 1)
-        plt.plot(params[:, :3])
-        plt.title("Translation (mm)")
-        plt.legend(['x', 'y', 'z'])
-        plt.grid(True)
-        
-        # Rotations (last 3 cols)
-        plt.subplot(2, 1, 2)
-        plt.plot(params[:, 3:])
-        plt.title("Rotation (radians)")
-        plt.legend(['pitch', 'roll', 'yaw'])
-        plt.grid(True)
-        
+        fig, axes = plt.subplots(2, 1, figsize=(10, 6))
+
+        # Translations
+        axes[0].plot(params[:, :3])
+        axes[0].set_title('Translation (mm)')
+        axes[0].legend(['x', 'y', 'z'])
+        axes[0].set_xlabel('Volume')
+        axes[0].grid(True)
+
+        # Rotations
+        axes[1].plot(params[:, 3:])
+        axes[1].set_title('Rotation (radians)')
+        axes[1].legend(['pitch (rx)', 'roll (ry)', 'yaw (rz)'])
+        axes[1].set_xlabel('Volume')
+        axes[1].grid(True)
+
         plt.tight_layout()
         plot_path = str(self.output_paths['motion_params']).replace('.txt', '.png')
-        plt.savefig(plot_path)
-        print(f"  Saved motion plot: {plot_path}")
+        plt.savefig(plot_path, dpi=150)
+        plt.close()
+        print(f"  Motion plot  : {plot_path}")

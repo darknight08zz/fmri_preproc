@@ -1,160 +1,238 @@
-
 import numpy as np
-from scipy.ndimage import affine_transform, map_coordinates
+from scipy.ndimage import map_coordinates, gaussian_filter, affine_transform
 from scipy.optimize import minimize
+
 
 class MotionEstimator:
     """
-    Estimates rigid-body motion parameters (6 degrees of freedom) 
-    for 3D volumes relative to a reference volume.
+    SPM-style rigid-body motion estimator (6 DOF).
+
+    Two improvements over previous version:
+    ─────────────────────────────────────────────────────────────
+    IMPROVEMENT 1 — Two-pass alignment  (SPM spm_realign.m)
+        Pass 1: align every volume to volume[0]
+        Pass 2: build mean from pass-1 result,
+                re-align every volume to that mean
+        Why: mean image is more stable than any single volume.
+
+    IMPROVEMENT 2 — World-space coordinates (mm, not voxels)
+        Coordinates transformed via affine before optimization.
+        Translations in rp_*.txt are now in mm (SPM standard).
+        Why: for anisotropic voxels (e.g. 3.5×3.5×5mm), voxel
+             translations ≠ mm and break motion QC thresholds.
+    ─────────────────────────────────────────────────────────────
     """
-    
+
     def __init__(self, data, affine=None):
         """
-        Initialize the estimator with 4D data.
-        
         Args:
-            data (numpy.ndarray): 4D image data (x, y, z, t).
-            affine (numpy.ndarray, optional): 4x4 affine matrix. Used for grid generation.
+            data   (np.ndarray): 4D image (X, Y, Z, T)
+            affine (np.ndarray): 4×4 voxel-to-world matrix
         """
-        if len(data.shape) != 4:
-            raise ValueError("Data must be 4D (x, y, z, t)")
-            
-        self.data = data
-        self.affine = affine if affine is not None else np.eye(4)
-        self.dims = data.shape[:3]
-        self.n_volumes = data.shape[3]
-        
-    def estimate_motion(self, ref_vol_idx=0):
+        if data.ndim != 4:
+            raise ValueError("Data must be 4D (X, Y, Z, T)")
+
+        self.data       = data.astype(np.float32)
+        self.affine     = affine if affine is not None else np.eye(4)
+        self.affine_inv = np.linalg.inv(self.affine)
+        self.dims       = data.shape[:3]
+        self.n_volumes  = data.shape[3]
+        self.sigma      = 3.0    # ≈ 8mm FWHM (SPM default)
+
+    # ──────────────────────────────────────────────────────────
+    # PUBLIC: two-pass motion estimation
+    # ──────────────────────────────────────────────────────────
+
+    def estimate_motion(self):
         """
-        Estimates motion parameters for all volumes relative to a reference volume.
-        
-        Args:
-            ref_vol_idx (int): Index of the reference volume (default: 0).
-            
+        Two-pass motion estimation — matches SPM spm_realign.m.
+
+            Pass 1: align all volumes to volume[0]
+            Pass 2: compute mean of pass-1 aligned data,
+                    re-align all volumes to that mean
+
         Returns:
-            numpy.ndarray: (n_volumes, 6) array of motion parameters.
-                           Columns: [tx, ty, tz, rx, ry, rz]
+            np.ndarray: (N, 6) — [tx(mm), ty(mm), tz(mm),
+                                   rx(rad), ry(rad), rz(rad)]
         """
-        # 1. Select Reference Volume (I_ref)
-        ref_vol = self.data[..., ref_vol_idx]
-        
-        # Pre-calculate coordinates for the reference volume
-        # We optimize by using a grid of coordinates
-        # Center of rotation is usually the center of the image
-        img_center = np.array(self.dims) / 2.0
-        
-        # Coordinate grid (x, y, z)
-        # We can use a mask here later to speed up (e.g., exclude background)
-        # For simplicity, we use the whole grid for now, but mask out very low values
-        mask = ref_vol > ref_vol.mean() * 0.1 # Simple threshold to ignore background
-        coords = np.array(np.where(mask)) # (3, N_voxels)
-        self.ref_values = ref_vol[mask]
-        
-        # Center the coordinates for rotation
-        self.centered_coords = coords - img_center[:, np.newaxis]
-        self.img_center = img_center
-        
-        # Initialize parameters [tx, ty, tz, rx, ry, rz]
-        # rx, ry, rz in radians
+
+        # ── PASS 1 ────────────────────────────────────────────
+        print("[ESTIMATE] Pass 1: aligning to first volume...")
+        ref_pass1    = self.data[..., 0].copy()
+        params_pass1 = self._run_pass(ref_pass1, pass_num=1)
+
+        # ── BUILD MEAN FROM PASS-1 RESULT ─────────────────────
+        print("[ESTIMATE] Building mean image from pass-1 result...")
+        mean_vol = self._build_mean(params_pass1)
+
+        # ── PASS 2 ────────────────────────────────────────────
+        print("[ESTIMATE] Pass 2: aligning to mean image...")
+        params_pass2 = self._run_pass(mean_vol, pass_num=2)
+
+        print("[ESTIMATE] Complete.")
+        return params_pass2
+
+    # ──────────────────────────────────────────────────────────
+    # Single alignment pass
+    # ──────────────────────────────────────────────────────────
+
+    def _run_pass(self, ref_vol, pass_num=1):
+        """
+        Align all volumes to ref_vol.
+        Returns (N, 6) parameter array.
+        """
+        # Smooth reference (SPM smooths at 8mm FWHM before cost function)
+        ref_smooth = gaussian_filter(ref_vol.astype(np.float32), sigma=self.sigma)
+
+        # Brain mask — SPM uses 0.8 * mean of smoothed image
+        mask = ref_smooth > ref_smooth.mean() * 0.8
+
+        # ── IMPROVEMENT 2: voxel → world space (mm) ───────────
+        #
+        # Previous: used raw voxel indices as coordinates
+        # Now:      transform each masked voxel to mm via affine
+        #
+        # Effect: translations in rp_ file are in mm (SPM standard)
+        # For isotropic 3mm voxels: no numeric difference
+        # For anisotropic (3.5×3.5×5mm): translations differ by
+        # the ratio of voxel sizes — critical for motion QC.
+        # ──────────────────────────────────────────────────────
+        vox_idx     = np.array(np.where(mask), dtype=np.float64)   # (3, N)
+        ones        = np.ones((1, vox_idx.shape[1]))
+        world_coords = (self.affine @ np.vstack([vox_idx, ones]))[:3]   # mm
+
+        # Rotation pivot = image center in mm
+        center_vox   = np.array(self.dims, dtype=np.float64) / 2.0
+        center_world = (self.affine @ np.append(center_vox, 1.0))[:3]
+
+        # Store for cost function
+        self._world_coords  = world_coords
+        self._center_world  = center_world
+        self._ref_values    = ref_smooth[mask].astype(np.float32)
+
+        motion_params  = np.zeros((self.n_volumes, 6))
         initial_params = np.zeros(6)
-        
-        motion_params = np.zeros((self.n_volumes, 6))
-        
-        print(f"Estimating motion for {self.n_volumes} volumes (Ref: {ref_vol_idx})...")
-        
+
         for t in range(self.n_volumes):
-            if t == ref_vol_idx:
-                continue # Motion is 0 for reference
-                
-            moving_vol = self.data[..., t]
-            
-            # Optimization (Minimize SSD)
-            # We use Powell or L-BFGS-B. SPM uses Gauss-Newton, but scipy's minimize is easier to implement robustly without analytic derivatives for now.
-            # Powell is derivative-free and works well for this dimensionality.
-            res = minimize(
-                self._cost_function, 
-                initial_params, 
-                args=(moving_vol,),
-                method='Powell',
-                tol=1e-4,
-                options={'maxiter': 100, 'disp': False}
+
+            moving_smooth = gaussian_filter(
+                self.data[..., t].astype(np.float32), sigma=self.sigma
             )
-            
-            motion_params[t, :] = res.x
-            
-            # Update initial guess for next volume (assuming smooth motion)
-            initial_params = res.x
-            
+
+            result = minimize(
+                self._cost_function,
+                initial_params,
+                args=(moving_smooth,),
+                method='Powell',
+                tol=1e-5,
+                options={'maxiter': 200, 'disp': False}
+            )
+
+            motion_params[t, :] = result.x
+            initial_params      = result.x    # warm start for next volume
+
             if t % 10 == 0:
-                print(f"  Vol {t}/{self.n_volumes}: {res.x}")
-                
+                p = result.x
+                print(
+                    f"  [Pass {pass_num}] Vol {t:3d}/{self.n_volumes} | "
+                    f"t=[{p[0]:.3f},{p[1]:.3f},{p[2]:.3f}]mm  "
+                    f"r=[{p[3]:.4f},{p[4]:.4f},{p[5]:.4f}]rad"
+                )
+
         return motion_params
-        
+
+    # ──────────────────────────────────────────────────────────
+    # Build mean image from pass-1 parameters
+    # ──────────────────────────────────────────────────────────
+
+    def _build_mean(self, motion_params):
+        """
+        Apply pass-1 transforms and average — produces the pass-2 reference.
+        This is exactly what SPM does between its two alignment passes.
+        """
+        accumulator = np.zeros(self.dims, dtype=np.float64)
+        center_vox  = np.array(self.dims, dtype=np.float64) / 2.0
+
+        for t in range(self.n_volumes):
+            p         = motion_params[t]
+            R, _      = self._build_R(p[3], p[4], p[5])
+            T         = p[:3]    # mm
+
+            # Convert mm translation to voxel space for scipy
+            # voxel offset = affine_inv applied to T
+            T_vox = (self.affine_inv[:3, :3] @ T)
+
+            offset = center_vox + T_vox - R @ center_vox
+
+            aligned = affine_transform(
+                self.data[..., t],
+                matrix=R,
+                offset=offset,
+                order=1,
+                mode='constant',
+                cval=0.0
+            )
+            accumulator += aligned.astype(np.float64)
+
+        mean_vol = (accumulator / self.n_volumes).astype(np.float32)
+        print(f"[ESTIMATE] Mean image computed from {self.n_volumes} volumes.")
+        return mean_vol
+
+    # ──────────────────────────────────────────────────────────
+    # Cost function — SSD in world space
+    # ──────────────────────────────────────────────────────────
+
     def _cost_function(self, params, moving_vol):
         """
-        Computes the Sum of Squared Differences (SSD) between 
-        the reference and the transformed moving volume.
+        SSD between reference and transformed moving volume.
+
+        IMPROVEMENT 2 (world-space):
+        - Rotation applied around center_world (mm)
+        - Translation in mm
+        - Transformed mm coords mapped back to voxels via affine_inv
+          for interpolation
         """
         tx, ty, tz, rx, ry, rz = params
-        
-        # 1. Build Transformation Matrix (Rigid Body)
-        # Rotation matrix (Euler angles, ZYX order usually)
-        # Small angle approximation is faster calculate but full rotation is more accurate
-        # We use full rotation matrix here
-        
-        # Rotation matrices
-        c, s = np.cos(rx), np.sin(rx)
-        Rx = np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
-        
-        c, s = np.cos(ry), np.sin(ry)
-        Ry = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
-        
-        c, s = np.cos(rz), np.sin(rz)
-        Rz = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
-        
-        # Combined Rotation R = Rz * Ry * Rx
-        R = Rz @ Ry @ Rx
-        
-        # Translation vector
-        T = np.array([tx, ty, tz])
-        
-        # 2. Transform Coordinates
-        # New_coords = R * (Coords - Center) + Center + T
-        # (Inverse mapping is usually used for interpolation: Source <- Target)
-        # But optimize uses forward model usually?
-        # Standard approach: Map Target(Ref) coordinates back to Source(Moving) to sample intensity
-        # Coords_source = R^-1 * (Coords_target - Center - T) + Center
-        
-        # Inverse Rotation is Transpose for orthogonal matrices
-        # Inverse Translation is -T
-        # Let's verify the direction. We want to sample Moving Image at locations that correspond to Reference.
-        # If Ref(x) corresponds to Mov(T(x)), we want the intensity at T(x) in Moving.
-        # So we transform Ref coordinates BY the parameters to find where they land in Moving space.
-        
-        rotated_coords = R @ self.centered_coords
-        transformed_coords = rotated_coords + self.img_center[:, np.newaxis] + T[:, np.newaxis]
-        
-        # 3. Interpolate (Trilinear)
-        # map_coordinates uses spline interpolation (order 1 = linear)
-        # Mode='nearest' or 'constant' to handle boundaries
-        sampled_values = map_coordinates(
-            moving_vol, 
-            transformed_coords, 
-            order=1, 
-            mode='constant', 
-            cval=0,
+        R, _  = self._build_R(rx, ry, rz)
+        T     = np.array([tx, ty, tz], dtype=np.float64)
+
+        # Rotate around world center, then translate
+        centered    = self._world_coords - self._center_world[:, np.newaxis]
+        world_trans = R @ centered + self._center_world[:, np.newaxis] + T[:, np.newaxis]
+
+        # World → voxel for interpolation
+        ones     = np.ones((1, world_trans.shape[1]))
+        vox_trans = (self.affine_inv @ np.vstack([world_trans, ones]))[:3]
+
+        sampled = map_coordinates(
+            moving_vol,
+            vox_trans,
+            order=1,
+            mode='constant',
+            cval=0.0,
             prefilter=False
         )
-        
-        # 4. Compute Residual (SSD)
-        # Simple Sum of Squared Differences
-        # We can ignore zero values to avoid boundary artifacts dominating
-        diff = sampled_values - self.ref_values
-        ssd = np.sum(diff**2)
-        
-        return ssd
 
-if __name__ == "__main__":
-    # Test stub
-    pass
+        diff = sampled.astype(np.float32) - self._ref_values
+        return float(np.sum(diff ** 2))
+
+    # ──────────────────────────────────────────────────────────
+    # Helper: build 3x3 rotation matrix (XYZ order — SPM)
+    # ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _build_R(rx, ry, rz):
+        """
+        Build 3×3 rotation matrix in SPM XYZ order: R = Rx @ Ry @ Rz
+        Returns (R, None) — tuple for potential future Jacobian extension.
+        """
+        c, s = np.cos(rx), np.sin(rx)
+        Rx   = np.array([[1,0,0],[0,c,-s],[0,s,c]], dtype=np.float64)
+
+        c, s = np.cos(ry), np.sin(ry)
+        Ry   = np.array([[c,0,s],[0,1,0],[-s,0,c]], dtype=np.float64)
+
+        c, s = np.cos(rz), np.sin(rz)
+        Rz   = np.array([[c,-s,0],[s,c,0],[0,0,1]], dtype=np.float64)
+
+        return Rx @ Ry @ Rz, None

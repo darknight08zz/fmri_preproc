@@ -8,6 +8,7 @@ export async function POST(request: NextRequest) {
         const formData = await request.formData();
         const files = formData.getAll("file") as File[];
         const folderName = formData.get("folderName") as string | null;
+        const folderType = formData.get("folderType") as string | null;
 
         if (!files || files.length === 0) {
             return NextResponse.json(
@@ -22,13 +23,15 @@ export async function POST(request: NextRequest) {
                 { status: 400 }
             );
         }
+        
+        const type = folderType === "anat" ? "anat" : "func";
 
         // Sanitize folder name (basic)
         const safeFolderName = folderName.replace(/[^a-zA-Z0-9_\-]/g, "_");
 
-        // Ensure uploads directory exists
+        // Ensure uploads directory exists: uploads/StudyName/type
         const baseUploadDir = join(process.cwd(), "..", "uploads");
-        const targetDir = join(baseUploadDir, safeFolderName);
+        const targetDir = join(baseUploadDir, safeFolderName, type);
 
         if (!existsSync(targetDir)) {
             await mkdir(targetDir, { recursive: true });
@@ -45,7 +48,12 @@ export async function POST(request: NextRequest) {
             savedFiles.push(file.name);
         }
 
-        return NextResponse.json({ success: true, count: savedFiles.length, folder: safeFolderName });
+        return NextResponse.json({ 
+            success: true, 
+            count: savedFiles.length, 
+            folder: safeFolderName,
+            type: type 
+        });
     } catch (error) {
         console.error("Upload error:", error);
         return NextResponse.json(

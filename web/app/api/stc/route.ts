@@ -20,14 +20,13 @@ export async function POST(request: Request) {
 
         const scriptPath = path.resolve(process.cwd(), "..", "run_stc.py");
 
-        // Resolve input file path
-        // Try to find the file in multiple locations
+        // Resolve input file path — try multiple locations
         let resolvedInputPath = filename;
         const potentialPaths = [
-            filename, // Absolute or relative to CWD (web)
-            path.resolve(process.cwd(), "..", filename), // Relative to project root
-            path.resolve(process.cwd(), "..", "converted", filename), // Relative to converted folder
-            path.resolve(process.cwd(), "..", "uploads", filename) // Relative to uploads folder (common convention)
+            filename,
+            path.resolve(process.cwd(), "..", filename),
+            path.resolve(process.cwd(), "..", "converted", filename),
+            path.resolve(process.cwd(), "..", "uploads", filename),
         ];
 
         for (const p of potentialPaths) {
@@ -36,9 +35,6 @@ export async function POST(request: Request) {
                 break;
             }
         }
-
-        // If we still can't find it, we pass the original and let the python script fail (or maybe we should error here?)
-        // Let's pass the resolved absolute path if found.
 
         let cmd = `python "${scriptPath}" "${resolvedInputPath}"`;
         if (slice_order) cmd += ` --slice_order ${slice_order}`;
@@ -72,7 +68,6 @@ export async function POST(request: Request) {
                 { status: 500 }
             );
         }
-
     } catch (error: any) {
         console.error("API Error:", error);
         return NextResponse.json(
@@ -81,4 +76,3 @@ export async function POST(request: Request) {
         );
     }
 }
-

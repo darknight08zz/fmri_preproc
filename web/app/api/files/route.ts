@@ -14,17 +14,36 @@ export async function GET() {
         const items = await readdir(uploadDir);
 
         // Filter to only include directories
-        const folders: { name: string, fileCount: number }[] = [];
+        const folders: { name: string, anatCount: number, funcCount: number }[] = [];
 
         for (const item of items) {
             const itemPath = join(uploadDir, item);
             const stats = await stat(itemPath);
             if (stats.isDirectory()) {
-                const files = await readdir(itemPath);
-                folders.push({
-                    name: item,
-                    fileCount: files.length
-                });
+                let anatCount = 0;
+                let funcCount = 0;
+
+                // Check anat/
+                const anatPath = join(itemPath, "anat");
+                if (existsSync(anatPath)) {
+                    const files = await readdir(anatPath);
+                    anatCount = files.length;
+                }
+
+                // Check func/
+                const funcPath = join(itemPath, "func");
+                if (existsSync(funcPath)) {
+                    const files = await readdir(funcPath);
+                    funcCount = files.length;
+                }
+
+                if (anatCount > 0 || funcCount > 0) {
+                    folders.push({
+                        name: item,
+                        anatCount,
+                        funcCount
+                    });
+                }
             }
         }
 

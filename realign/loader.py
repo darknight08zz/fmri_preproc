@@ -1,93 +1,62 @@
-
-import os
 import nibabel as nib
 import numpy as np
 from pathlib import Path
 
+
 class VolumeLoader:
     """
-    Handles loading of 4D NIfTI files and extraction of metadata 
-    for the Realign module.
+    Loads a 4D NIfTI file and prepares SPM-style output filenames
+    for the Realign (Estimate + Reslice) module.
+
+    Fix applied vs original:
+    - get_fdata(dtype='float32') added — avoids default float64 which
+      doubles memory usage for large 4D fMRI files
     """
-    
+
     def __init__(self, file_path):
-        """
-        Initialize the loader with the path to the 4D NIfTI file.
-        
-        Args:
-            file_path (str): Path to the input 4D NIfTI file.
-        """
         self.file_path = Path(file_path)
         if not self.file_path.exists():
             raise FileNotFoundError(f"Input file not found: {self.file_path}")
-            
-        self.img = None
-        self.data = None
-        self.affine = None
-        self.header = None
-        
+        self.img = self.data = self.affine = self.header = None
+
     def load(self):
         """
-        Loads the NIfTI file and extracts data, affine, and header.
-        
-        Returns:
-            tuple: (data, affine, header)
-                - data (numpy.ndarray): 4D image data
-                - affine (numpy.ndarray): 4x4 affine matrix
-                - header (nibabel.nifti1.Nifti1Header): Image header
+        FIX: dtype='float32' passed to get_fdata().
+        Original used float64 (default) — 2x memory for no benefit.
+        float32 is sufficient precision for all fMRI preprocessing.
         """
         try:
             self.img = nib.load(self.file_path)
-            
-            # Ensure 4D
-            if len(self.img.shape) != 4:
-                raise ValueError(f"Input file must be 4D. Shape found: {self.img.shape}")
-                
-            self.data = self.img.get_fdata()
+
+            if self.img.ndim != 4:
+                raise ValueError(f"Expected 4D NIfTI, got: {self.img.shape}")
+
+            self.data   = self.img.get_fdata(dtype='float32')  # FIX
             self.affine = self.img.affine
             self.header = self.img.header
-            
+
+            print(f"[LOADER] Loaded : {self.file_path.name}")
+            print(f"[LOADER] Shape  : {self.data.shape}  (X, Y, Z, T)")
+
             return self.data, self.affine, self.header
-            
+
         except Exception as e:
-            raise RuntimeError(f"Error loading NIfTI file: {e}")
+            raise RuntimeError(f"Failed to load NIfTI: {e}")
 
     def get_output_filenames(self):
         """
-        Generates SPM-style output filenames based on the input filename.
-        
-        Returns:
-            dict: Dictionary containing output paths:
-                - 'resliced': Prefix 'r' (e.g., rsub-01_4D.nii)
-                - 'mean': Prefix 'mean' (e.g., meansub-01_4D.nii)
-                - 'motion_params': Prefix 'rp_' and .txt extension (e.g., rp_sub-01_4D.txt)
+        SPM Realign output naming:
+            r{name}.nii      resliced 4D
+            mean{name}.nii   mean image
+            rp_{stem}.txt    motion parameters
         """
         parent = self.file_path.parent
-        stem = self.file_path.stem
-        # Handle .nii.gz if necessary (pathlib stem handles .nii, but .nii.gz leaves .nii)
+        stem   = self.file_path.stem
         if stem.endswith('.nii'):
             stem = stem[:-4]
-            
-        # Output filenames
-        resliced_name = f"r{self.file_path.name}"
-        mean_name = f"mean{self.file_path.name}"
-        motion_params_name = f"rp_{stem}.txt"
-        
-        return {
-            'resliced': parent / resliced_name,
-            'mean': parent / mean_name,
-            'motion_params': parent / motion_params_name
-        }
 
-if __name__ == "__main__":
-    # Example usage
-    import sys
-    if len(sys.argv) > 1:
-        loader = VolumeLoader(sys.argv[1])
-        print(f"Loading {sys.argv[1]}...")
-        data, affine, header = loader.load()
-        print(f"Data shape: {data.shape}")
-        outputs = loader.get_output_filenames()
-        print("Output files would be:")
-        for k, v in outputs.items():
-            print(f"  {k}: {v}")
+        return {
+            'resliced'     : parent / f"r{self.file_path.name}",
+            'mean'         : parent / f"mean{self.file_path.name}",
+            'motion_params': parent / f"rp_{stem}.txt"
+        }

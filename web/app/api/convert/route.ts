@@ -10,30 +10,30 @@ const execAsync = promisify(exec);
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
-        const { folderName } = body;
+        const { folderName, type } = body;
 
-        if (!folderName) {
+        if (!folderName || !type) {
             return NextResponse.json(
-                { error: "Folder name is required" },
+                { error: "Folder name and type (anat/func) are required" },
                 { status: 400 }
             );
         }
 
         // Define paths
         const baseDir = join(process.cwd(), ".."); // Go up one level from 'web'
-        const inputDir = join(baseDir, "uploads", folderName);
-        const outputDir = join(baseDir, "converted", folderName);
+        const inputDir = join(baseDir, "uploads", folderName, type);
+        const outputDir = join(baseDir, "converted", folderName, type);
         const scriptPath = join(baseDir, "run_converter.py");
 
         // Validate input exists
         if (!existsSync(inputDir)) {
             return NextResponse.json(
-                { error: "Study folder not found" },
+                { error: `Study folder not found: ${inputDir}` },
                 { status: 404 }
             );
         }
 
-        // Ensure output directory exists (parent 'converted' + study folder)
+        // Ensure output directory exists (parent 'converted' + study folder + type)
         if (!existsSync(outputDir)) {
             await mkdir(outputDir, { recursive: true });
         }
