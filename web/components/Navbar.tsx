@@ -17,8 +17,8 @@ export default function Navbar() {
   const pathname = usePathname();
 
   return (
-    <nav className="w-full bg-black/10 backdrop-blur-md border-b border-white/[0.04] sticky top-0 z-40 px-6">
-      <div className="max-w-[1400px] mx-auto h-11 flex items-center gap-1 overflow-x-auto no-scrollbar">
+    <nav className="w-full bg-black/20 backdrop-blur-md border-b border-white/[0.04] sticky top-0 z-40 px-6">
+      <div className="max-w-[1400px] mx-auto h-12 flex items-center gap-2 overflow-x-auto">
 
         {/* Nav links */}
         {navItems.map((item) => {

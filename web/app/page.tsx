@@ -10,8 +10,8 @@ const pipelineSteps = [
   { step: "02", name: "Slice Timing", href: "/stc", desc: "TR slice correction", output: "srarfunc_4D.nii", done: true, active: false },
   { step: "03", name: "Coregistration", href: "/coreg", desc: "func → struct align", output: "mT1w.nii", done: true, active: false },
   { step: "04", name: "Segmentation", href: "/segment", desc: "GM / WM / CSF masks", output: "c1/c2/c3*.nii", done: true, active: false },
-  { step: "05", name: "Normalisation", href: "/normalise", desc: "MNI space warp", output: "wrarfunc_4D.nii", done: false, active: true },
-  { step: "06", name: "Smoothing", href: "/smooth", desc: "Gaussian FWHM kernel", output: "swrarfunc_4D.nii", done: false, active: false },
+  { step: "05", name: "Normalisation", href: "/normalise", desc: "MNI space warp", output: "wrarfunc_4D.nii", done: true, active: false },
+  { step: "06", name: "Smoothing", href: "/smooth", desc: "Gaussian FWHM kernel", output: "swrarfunc_4D.nii", done: true, active: false },
 ];
 
 const doneCount = pipelineSteps.filter((s) => s.done).length;
@@ -101,7 +101,7 @@ export default function Home() {
             <div className="pipeline-track h-[1px] bg-white/[0.04] absolute top-[25px] left-0 right-0 z-0">
               <div
                 className="pipeline-progress h-full bg-[#10b9814d] shadow-[0_0_10px_#10b98133] transition-all duration-700"
-                style={{ width: `${(doneCount / (pipelineSteps.length - 1)) * 100}%` }}
+                style={{ width: `${(doneCount / pipelineSteps.length) * 100}%` }}
               />
             </div>
 
