@@ -50,11 +50,8 @@ def run_stc(input_file, tr=None, slice_order_type="ascending",
     n_slices = data.shape[2]
 
     if "SliceTiming" in metadata:
-
         print("Using SliceTiming vector from JSON")
-
         slice_times = metadata["SliceTiming"]
-
         if len(slice_times) != n_slices:
             raise ValueError("SliceTiming length does not match number of slices")
 
@@ -68,9 +65,21 @@ def run_stc(input_file, tr=None, slice_order_type="ascending",
         )
 
     else:
-        print("No SliceTiming found. Using slice_order fallback.")
-
-        slice_order = parse_slice_order(slice_order_type, n_slices)
+        print(f"No SliceTiming found. Using slice_order: {slice_order_type}")
+        
+        # Check if slice_order_type is a comma-separated list of numbers
+        if "," in slice_order_type or slice_order_type.isdigit():
+            try:
+                slice_order = [int(x.strip()) for x in slice_order_type.split(",")]
+                # SPM uses 1-based, our SliceTimer uses 0-based. 
+                # The extractor (extract_stc_params.py) returns 1-based.
+                # Let's adjust if they look 1-based.
+                if max(slice_order) == n_slices and min(slice_order) == 1:
+                    slice_order = [x - 1 for x in slice_order]
+            except ValueError:
+                raise ValueError(f"Could not parse numeric slice order: {slice_order_type}")
+        else:
+            slice_order = parse_slice_order(slice_order_type, n_slices)
 
         timer = SliceTimer(
             data,
@@ -81,7 +90,6 @@ def run_stc(input_file, tr=None, slice_order_type="ascending",
         )
 
     corrected = timer.correct()
-
     output_path = loader.output_path()
     new_img = nib.Nifti1Image(corrected, affine, header)
     nib.save(new_img, output_path)
@@ -90,21 +98,17 @@ def run_stc(input_file, tr=None, slice_order_type="ascending",
         "status": "completed",
         "output": str(output_path)
     }
-
     print(json.dumps(result))
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser(description="Slice Timing Correction with JSON auto-detection")
-
     parser.add_argument("input_file", help="Path to 4D NIfTI file")
     parser.add_argument("--tr", type=float, help="Repetition time (seconds)")
     parser.add_argument("--ta", type=float, help="Acquisition time (seconds)")
     parser.add_argument("--slice_order",
                         type=str,
                         default="ascending",
-                        choices=["ascending", "descending", "interleaved"],
-                        help="Slice acquisition order (fallback)")
+                        help="Slice acquisition order (choice or comma-separated numbers)")
     parser.add_argument("--ref_slice",
                         type=int,
                         default=0,

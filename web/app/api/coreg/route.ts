@@ -234,6 +234,21 @@ except Exception as e:
     }
 
     const data = JSON.parse(resultLine.replace("__RESULT__", ""));
+
+    // Transform absolute paths to relative
+    if (data.output_files) {
+      const convertedDir = path.join(PROJECT_ROOT, "converted").toLowerCase().replace(/\\/g, "/");
+      data.output_files = data.output_files.map((val: string) => {
+        const normalizedVal = val.replace(/\\/g, "/");
+        if (path.isAbsolute(normalizedVal) && normalizedVal.toLowerCase().startsWith(convertedDir)) {
+          return path.relative(path.join(PROJECT_ROOT, "converted"), normalizedVal).replace(/\\/g, "/");
+        }
+        return normalizedVal;
+      });
+      // Add outputFile for convenience (usually the first resliced image)
+      data.outputFile = data.output_files[0];
+    }
+
     return NextResponse.json({ ...data, stdout });
 
   } catch (err: any) {

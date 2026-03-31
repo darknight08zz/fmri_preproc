@@ -60,6 +60,18 @@ export async function POST(request: Request) {
                 return NextResponse.json({ error: result.message }, { status: 500 });
             }
 
+            // Transform absolute paths to relative
+            const PROJECT_ROOT = path.resolve(process.cwd(), "..");
+            const convertedDir = path.join(PROJECT_ROOT, "converted").toLowerCase().replace(/\\/g, "/");
+            let output = result.output.replace(/\\/g, "/");
+            
+            if (path.isAbsolute(output) && output.toLowerCase().startsWith(convertedDir)) {
+                output = path.relative(path.join(PROJECT_ROOT, "converted"), output).replace(/\\/g, "/");
+            }
+            
+            result.output = output;
+            result.outputFile = output; // For consistency with other APIs
+
             return NextResponse.json(result);
         } catch (parseError) {
             console.error("Error parsing STC output:", parseError);

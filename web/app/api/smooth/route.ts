@@ -105,10 +105,11 @@ export async function POST(req: NextRequest) {
         }
 
         // ── Calculate relative path for frontend serving ────────────────
-        const convertedDir = path.join(PROJECT_ROOT, "converted");
-        let outputFile = result.outputFile;
-        if (outputFile && path.isAbsolute(outputFile) && outputFile.startsWith(convertedDir)) {
-          outputFile = path.relative(convertedDir, outputFile).replace(/\\/g, "/");
+        const convertedDir = path.join(PROJECT_ROOT, "converted").toLowerCase().replace(/\\/g, "/");
+        let outputFile = (result.outputFile || "").replace(/\\/g, "/");
+        
+        if (outputFile && path.isAbsolute(outputFile) && outputFile.toLowerCase().startsWith(convertedDir)) {
+          outputFile = path.relative(path.join(PROJECT_ROOT, "converted"), outputFile).replace(/\\/g, "/");
         }
 
         return NextResponse.json({

@@ -196,6 +196,22 @@ except Exception as e:
         }
 
         const data = JSON.parse(resultLine.replace("__RESULT__", ""));
+
+        // Transform absolute paths to relative
+        if (data.output_files) {
+            const convertedDir = path.join(PROJECT_ROOT, "converted").toLowerCase().replace(/\\/g, "/");
+            const transformedOutputs: any = {};
+            for (const [key, value] of Object.entries(data.output_files)) {
+                let val = (value as string).replace(/\\/g, "/");
+                if (path.isAbsolute(val) && val.toLowerCase().startsWith(convertedDir)) {
+                    transformedOutputs[key] = path.relative(path.join(PROJECT_ROOT, "converted"), val).replace(/\\/g, "/");
+                } else {
+                    transformedOutputs[key] = val;
+                }
+            }
+            data.output_files = transformedOutputs;
+        }
+
         return NextResponse.json({ ...data, stdout });
 
     } catch (err: any) {

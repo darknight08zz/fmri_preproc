@@ -38,6 +38,7 @@ class MotionEstimator:
         self.dims       = data.shape[:3]
         self.n_volumes  = data.shape[3]
         self.sigma      = 3.0    # ≈ 8mm FWHM (SPM default)
+        self.sampling   = 3      # SPM style: only use every Nth voxel for speed
 
     # ──────────────────────────────────────────────────────────
     # PUBLIC: two-pass motion estimation
@@ -86,6 +87,12 @@ class MotionEstimator:
 
         # Brain mask — SPM uses 0.8 * mean of smoothed image
         mask = ref_smooth > ref_smooth.mean() * 0.8
+
+        # Apply spatial sampling for speed
+        if self.sampling > 1:
+            s_mask = np.zeros_like(mask)
+            s_mask[::self.sampling, ::self.sampling, ::self.sampling] = True
+            mask &= s_mask
 
         # ── IMPROVEMENT 2: voxel → world space (mm) ───────────
         #

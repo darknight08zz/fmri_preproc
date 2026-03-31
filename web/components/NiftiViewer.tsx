@@ -34,10 +34,7 @@ interface OverlayConfig {
     visible: boolean;
 }
 
-// SPM default overlay colors — matches your screenshot exactly:
-//   GM  → red    (cortex, basal ganglia)
-//   WM  → yellow (deep white matter)
-//   CSF → green  (ventricles, sulci)
+// SPM default overlay colors
 const SPM_DEFAULTS = [
     { key: "c1", label: "c1 — Gray Matter",  color: "red",    hex: "#f87171" },
     { key: "c2", label: "c2 — White Matter", color: "yellow", hex: "#fbbf24" },
@@ -118,8 +115,6 @@ export default function NiftiViewer({ url, initialOverlays = [] }: NiftiViewerPr
                     data.folders.forEach((folder: any) => {
                         if (folder.files) {
                             folder.files.forEach((file: string) => {
-                                // The API already returns paths like "anat/file.nii"
-                                // We need "folderName/anat/file.nii" for /api/serve-file?path=
                                 flattened.push(`${folder.name}/${file}`);
                             });
                         }
@@ -156,7 +151,6 @@ export default function NiftiViewer({ url, initialOverlays = [] }: NiftiViewerPr
             nvRef.current = nv;
             nv.attachToCanvas(canvas);
 
-            // RAF-throttled crosshair (prevents 180 re-renders/sec shake)
             nv.onLocationChange = (data: any) => {
                 if (!data) return;
                 crosshairRawRef.current = {
@@ -179,7 +173,6 @@ export default function NiftiViewer({ url, initialOverlays = [] }: NiftiViewerPr
             setLoadError(null);
 
             try {
-                // Base T1w + any initial overlays
                 const volumes: any[] = [{ url, colormap: "gray" }];
                 for (const ov of initialOverlays) {
                     if (ov.visible) volumes.push(buildVolumeSpec(ov));
@@ -189,7 +182,6 @@ export default function NiftiViewer({ url, initialOverlays = [] }: NiftiViewerPr
                 if (isCancelled) return;
 
                 nv.setSliceType((nv as any).sliceTypeMultiplanar);
-                nv.opts.multiplanarShowRender    = 0;
                 nv.opts.isRadiologicalConvention = false;
                 nv.setSliceMM(true);
                 nv.opts.crosshairWidth = 0.15;
@@ -226,7 +218,12 @@ export default function NiftiViewer({ url, initialOverlays = [] }: NiftiViewerPr
             isCancelled = true;
             ro.disconnect();
             rafPendingRef.current = false;
-            nvRef.current = null;
+            
+            // FIX 2: Prevent WebGL memory leaks
+            if (nvRef.current) {
+                (nvRef.current as any).detach?.(); 
+                nvRef.current = null;
+            }
         };
     }, [url]);
 
@@ -259,7 +256,6 @@ export default function NiftiViewer({ url, initialOverlays = [] }: NiftiViewerPr
         setActiveView(view);
         if (view === "multiplanar") {
             nv.setSliceType((nv as any).sliceTypeMultiplanar);
-            nv.opts.multiplanarShowRender = 0;
             applyMultiplanarLayout(nv);
         } else {
             const map: Record<string, any> = {
@@ -316,7 +312,6 @@ export default function NiftiViewer({ url, initialOverlays = [] }: NiftiViewerPr
         setActiveView("multiplanar"); setBrightness(50); setContrast(50);
         setCrosshairOn(true); setColormap("gray");
         nv.setSliceType((nv as any).sliceTypeMultiplanar);
-        nv.opts.multiplanarShowRender = 0;
         nv.opts.crosshairWidth = 0.15;
         nv.opts.crosshairColor = [0.2, 0.6, 1, 1];
         const vol = (nv as any).volumes?.[0];
@@ -329,14 +324,7 @@ export default function NiftiViewer({ url, initialOverlays = [] }: NiftiViewerPr
     //  Overlay engine
     // ─────────────────────────────────────────
 
-    /**
-     * Re-sync ALL visible overlays into Niivue.
-     *
-     * Strategy: reload volumes[0] (T1w base) + every visible overlay.
-     * This is the cleanest approach — Niivue doesn't expose a
-     * remove-single-volume API reliably across versions.
-     * SPM does the same: it redraws the full stack on every overlay change.
-     */
+    // syncToNiivue is now ONLY used when fully adding or removing a volume.
     const syncToNiivue = useCallback(async (next: OverlayConfig[]) => {
         const nv = nvRef.current; if (!nv) return;
         setIsLoading(true);
@@ -355,14 +343,14 @@ export default function NiftiViewer({ url, initialOverlays = [] }: NiftiViewerPr
         }
     }, [url, colormap, crosshairOn]);
 
-    // Add one overlay by URL + auto-detect label/color from filename
     const addOverlay = useCallback(async (ovUrl: string, label: string, color: string) => {
         if (!ovUrl.trim()) return;
         
-        // Rewrite incorrect /api/files/ paths to the actual file serving endpoint
+        // FIX 3: Safe handling of both pre-formatted API strings and raw paths
         let finalUrl = ovUrl.trim();
-        if (finalUrl.startsWith("/api/files/")) {
-            finalUrl = `/api/serve-file?path=${finalUrl.replace("/api/files/", "")}`;
+        if (!finalUrl.includes("/api/serve-file")) {
+            const cleanPath = finalUrl.replace("/api/files/", "");
+            finalUrl = `/api/serve-file?path=${encodeURIComponent(cleanPath)}`;
         }
 
         const newOv: OverlayConfig = {
@@ -378,23 +366,56 @@ export default function NiftiViewer({ url, initialOverlays = [] }: NiftiViewerPr
         await syncToNiivue(next);
     }, [overlays, syncToNiivue]);
 
-    const toggleOverlay = useCallback(async (id: string) => {
-        const next = overlays.map((o) => o.id === id ? { ...o, visible: !o.visible } : o);
-        setOverlays(next);
-        await syncToNiivue(next);
-    }, [overlays, syncToNiivue]);
+    // FIX 1: Optimized UI Mutations without Network Reloading
+    const toggleOverlay = useCallback((id: string) => {
+        const nv = nvRef.current;
+        if (!nv) return;
 
-    const changeColor = useCallback(async (id: string, color: string) => {
-        const next = overlays.map((o) => o.id === id ? { ...o, color } : o);
-        setOverlays(next);
-        await syncToNiivue(next);
-    }, [overlays, syncToNiivue]);
+        const targetOverlay = overlays.find((o) => o.id === id);
+        if (!targetOverlay) return;
 
-    const changeOpacity = useCallback(async (id: string, opacity: number) => {
-        const next = overlays.map((o) => o.id === id ? { ...o, opacity } : o);
-        setOverlays(next);
-        await syncToNiivue(next);
-    }, [overlays, syncToNiivue]);
+        const isNowVisible = !targetOverlay.visible;
+        setOverlays((prev) => prev.map((o) => o.id === id ? { ...o, visible: isNowVisible } : o));
+
+        const targetIndex = overlays.findIndex((o) => o.id === id) + 1;
+        if (targetIndex > 0 && (nv as any).volumes?.[targetIndex]) {
+            // Drop opacity to 0 to hide it instantly, restore saved opacity to show
+            nv.setOpacity(targetIndex, isNowVisible ? targetOverlay.opacity : 0.0);
+            nv.updateGLVolume();
+        }
+    }, [overlays]);
+
+    const changeColor = useCallback((id: string, color: string) => {
+        const nv = nvRef.current;
+        if (!nv) return;
+
+        setOverlays((prev) => prev.map((o) => o.id === id ? { ...o, color } : o));
+
+        const targetIndex = overlays.findIndex((o) => o.id === id) + 1;
+        if (targetIndex > 0 && (nv as any).volumes?.[targetIndex]) {
+            const volumeId = (nv as any).volumes[targetIndex].id;
+            nv.setColormap(volumeId, color);
+            nv.updateGLVolume();
+        }
+    }, [overlays]);
+
+    const changeOpacity = useCallback((id: string, opacity: number) => {
+        const nv = nvRef.current;
+        if (!nv) return;
+
+        setOverlays((prev) => prev.map((o) => o.id === id ? { ...o, opacity } : o));
+
+        const targetOverlay = overlays.find((o) => o.id === id);
+        const targetIndex = overlays.findIndex((o) => o.id === id) + 1;
+        
+        if (targetIndex > 0 && (nv as any).volumes?.[targetIndex]) {
+            // Only push WebGL changes if the overlay is actually visible
+            if (targetOverlay?.visible) {
+                nv.setOpacity(targetIndex, opacity);
+                nv.updateGLVolume();
+            }
+        }
+    }, [overlays]);
 
     const removeOverlay = useCallback(async (id: string) => {
         const next = overlays.filter((o) => o.id !== id);
@@ -583,7 +604,7 @@ const CrosshairHUD = memo(function CrosshairHUD({ crosshair }: { crosshair: Cros
             <div>
                 <span className="text-[#4a5568] w-6 inline-block">I</span>
                 <span className="text-[#fbbf24]">
-                    {crosshair.intensity !== null ? crosshair.intensity.toFixed(2) : "—"}
+                    {crosshair.intensity !== null && crosshair.intensity !== undefined ? crosshair.intensity.toFixed(2) : "0.00"}
                 </span>
             </div>
         </div>
@@ -676,9 +697,9 @@ const Sidebar = memo(function Sidebar({
                                         ? `${imageInfo.pixDims[1]?.toFixed(2)}×${imageInfo.pixDims[2]?.toFixed(2)}×${imageInfo.pixDims[3]?.toFixed(2)} mm` : "—"} />
                             </Section>
                             <Section label="Cursor">
-                                <Row k="mm" v={crosshair.mm.map((v) => v.toFixed(1)).join(", ")} />
+                                <Row k="mm" v={crosshair.mm.map((v) => v.toFixed(2)).join(", ")} />
                                 <Row k="vx" v={crosshair.vox.map((v) => Math.round(v)).join(", ")} />
-                                <Row k="I"  v={crosshair.intensity !== null ? crosshair.intensity.toFixed(4) : "—"} highlight />
+                                <Row k="I"  v={crosshair.intensity !== null && crosshair.intensity !== undefined ? crosshair.intensity.toFixed(4) : "0.0000"} highlight />
                             </Section>
                         </>
                     ) : (
@@ -852,7 +873,7 @@ function QuickAddRow({ label, color: defaultColor, hex, availableFiles, onAdd }:
                 >
                     <option value="">-- select file --</option>
                     {availableFiles.map((file) => (
-                        <option key={file} value={`/api/serve-file?path=${file}`}>
+                        <option key={file} value={file}>
                             {file}
                         </option>
                     ))}
@@ -979,14 +1000,14 @@ function Section({ label, children }: { label: string; children: React.ReactNode
     );
 }
 
-function Row({ k, v, truncate = false, highlight = false }: {
+function Row({ k, v, truncate = true, highlight = false }: {
     k: string; v: string; truncate?: boolean; highlight?: boolean;
 }) {
     return (
-        <div className="flex gap-2 items-baseline">
+        <div className="flex gap-2 items-baseline overflow-hidden">
             <span className="text-[#3a4050] w-10 flex-shrink-0 text-right">{k}</span>
             <span className={`font-mono tabular-nums text-[10px] ${highlight ? "text-[#fbbf24]" : "text-[#7b8494]"}
-                             ${truncate ? "truncate" : ""}`}
+                             ${truncate ? "truncate" : ""} flex-1`}
                 title={v}>{v}</span>
         </div>
     );

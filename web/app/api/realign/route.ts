@@ -69,6 +69,24 @@ export async function POST(req: Request) {
                         const lines = outputData.trim().split("\n");
                         const lastLine = lines[lines.length - 1];
                         const result = JSON.parse(lastLine);
+                        
+                        // Transform absolute paths to relative
+                        if (result.status === "completed" && result.outputs) {
+                            const convertedDir = path.join(projectRoot, "converted").toLowerCase().replace(/\\/g, "/");
+                            const transformedOutputs: any = {};
+                            for (const [key, value] of Object.entries(result.outputs)) {
+                                let val = (value as string).replace(/\\/g, "/");
+                                if (path.isAbsolute(val) && val.toLowerCase().startsWith(convertedDir)) {
+                                    // Use original case for the relative path, but normalized slashes
+                                    transformedOutputs[key] = path.relative(path.join(projectRoot, "converted"), val).replace(/\\/g, "/");
+                                } else {
+                                    transformedOutputs[key] = val;
+                                }
+                            }
+                            result.outputs = transformedOutputs;
+                            // Add a top-level outputFile for convenience (resliced)
+                            result.outputFile = transformedOutputs.resliced;
+                        }
 
                         resolve(NextResponse.json(result));
                     } catch (e) {

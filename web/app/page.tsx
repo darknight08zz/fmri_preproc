@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import FileUpload from "@/components/FileUpload";
 import FileList from "@/components/FileList";
 import ConvertedList from "@/components/ConvertedList";
+import AutoPipeline from "@/components/AutoPipeline";
 
 const pipelineSteps = [
   { step: "01", name: "Realign", href: "/realign", desc: "Motion correction", output: "rarfunc_4D.nii", done: true, active: false },
@@ -19,6 +20,20 @@ const doneCount = pipelineSteps.filter((s) => s.done).length;
 export default function Home() {
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [conversionTrigger, setConversionTrigger] = useState(0);
+  const [folders, setFolders] = useState<any[]>([]);
+  const [selectedFolder, setSelectedFolder] = useState<string>("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/files");
+        const data = await res.json();
+        setFolders(data.folders ?? []);
+      } catch (err) {
+        console.error("Failed to fetch uploaded folders", err);
+      }
+    })();
+  }, [refreshTrigger]);
 
   return (
     <div className="min-h-[90vh] text-white">
@@ -83,6 +98,49 @@ export default function Home() {
             />
             <ConvertedList refreshTrigger={conversionTrigger} />
           </div>
+        </div>
+      </section>
+
+      {/* ────────────────── AUTOMATED PIPELINE (NEW) ─────────────────── */}
+      <section className="max-w-[1400px] mx-auto px-6 py-10">
+        <div className="flex items-center gap-3 mb-7">
+          <span className="text-white/12 text-[10px] tracking-[0.18em] uppercase whitespace-nowrap">Automation</span>
+          <div className="flex-1 h-px bg-white/[0.04]" />
+          <span className="text-white/25 text-[12px]">One-Click Preprocessing</span>
+        </div>
+
+        <div className="bg-white/[0.01] border border-white/[0.04] rounded-2xl p-6 mb-8">
+            <div className="flex flex-col md:flex-row md:items-center gap-6 mb-8">
+                <div className="flex-1">
+                    <h2 className="text-lg font-bold text-white mb-2">Automated Pipeline</h2>
+                    <p className="text-white/30 text-[13px] leading-relaxed max-w-[500px]">
+                        Select a study folder and run the entire preprocessing chain (Realign → Smooth) automatically. 
+                        This uses standard SPM parameters for rs-fMRI.
+                    </p>
+                </div>
+                <div className="w-full md:w-64">
+                    <label className="text-[10px] text-white/20 uppercase tracking-widest block mb-2">Select Study</label>
+                    <select 
+                        value={selectedFolder}
+                        onChange={(e) => setSelectedFolder(e.target.value)}
+                        className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-3 text-[13px] text-white/60 focus:outline-none focus:border-emerald-500/30 transition-all font-mono"
+                    >
+                        <option value="">-- select study --</option>
+                        {folders.map(f => (
+                            <option key={f.name} value={f.name}>{f.name} ({f.anatCount + f.funcCount} series)</option>
+                        ))}
+                    </select>
+                </div>
+            </div>
+
+            {selectedFolder && (
+                <div className="animate-in fade-in slide-in-from-top-4 duration-500">
+                    <AutoPipeline 
+                        folderName={selectedFolder} 
+                        onComplete={() => setConversionTrigger(p => p + 1)} 
+                    />
+                </div>
+            )}
         </div>
       </section>
 
